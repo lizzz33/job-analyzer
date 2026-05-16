@@ -1,0 +1,15 @@
+.env
+data/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.claude
+.claudeignore
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+uv.lock

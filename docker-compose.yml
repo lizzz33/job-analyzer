@@ -1,0 +1,85 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: job_analyzer_api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./app:/app/app
+    secrets:
+      - gigachat_api_key
+    environment:
+      - GIGACHAT_SCOPE=GIGACHAT_API_PERS
+      - DAILY_REPORT_HOUR=9
+      - DAILY_REPORT_MINUTE=0
+      - CHROMA_DB_PATH=/app/data/chroma_db
+      - RESUMES_PATH=/app/data/resumes
+      - API_BASE_URL=http://api:8000
+      - GIGACHAT_API_KEY_FILE=/run/secrets/gigachat_api_key
+      - GIGACHAT_MODEL=GigaChat-Pro
+    restart: unless-stopped
+    networks:
+      - job_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    container_name: job_analyzer_ui
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./streamlit_app:/app/streamlit_app
+    environment:
+      - API_BASE_URL=http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - job_net
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: job_analyzer_scheduler
+    command: python -m scheduler.daily_job
+    volumes:
+      - ./data:/app/data
+      - ./app:/app/app
+      - ./scheduler:/app/scheduler
+    secrets:
+      - gigachat_api_key
+    environment:
+      - GIGACHAT_SCOPE=GIGACHAT_API_PERS
+      - DAILY_REPORT_HOUR=9
+      - DAILY_REPORT_MINUTE=0
+      - CHROMA_DB_PATH=/app/data/chroma_db
+      - RESUMES_PATH=/app/data/resumes
+      - API_BASE_URL=http://api:8000
+      - GIGACHAT_API_KEY_FILE=/run/secrets/gigachat_api_key
+      - GIGACHAT_MODEL=GigaChat-Pro
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - job_net
+
+secrets:
+  gigachat_api_key:
+    file: ~/secrets/gigachat_api_key.txt
+    
+networks:
+  job_net:
+    driver: bridge
