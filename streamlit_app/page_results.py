@@ -1,14 +1,14 @@
 """Страница результатов — основной дашборд"""
 
 from datetime import datetime
-import os
+import html
 
 import httpx
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-API = os.getenv("API_BASE_URL", "http://localhost:8000")
+from streamlit_app.config import API
 
 
 def _load_report() -> list[dict]:
@@ -189,18 +189,24 @@ def render():
         salary = _salary_str(sv)
         pub_date = v.get("published_at", "")[:10] if v.get("published_at") else ""
 
+        safe_url = html.escape(v.get("url", "#"))
+        safe_title = html.escape(v.get("title", ""))
+        safe_company = html.escape(v.get("company", ""))
+        safe_city = html.escape(v.get("city", ""))
+        safe_reason = html.escape(sv.get("match_reason", "")[:200])
+
         st.markdown(
             f"""
 <div class="vacancy-card">
   <div style="display:flex;justify-content:space-between;align-items:flex-start;">
     <div style="flex:1;">
       <div style="font-size:17px;font-weight:600;margin-bottom:2px;">
-        {i}. <a href="{v.get("url", "#")}" target="_blank"
-              style="color:#c7d2fe;text-decoration:none;">{v.get("title", "")}</a>
+        {i}. <a href="{safe_url}" target="_blank"
+              style="color:#c7d2fe;text-decoration:none;">{safe_title}</a>
       </div>
       <div style="color:#6b7280;font-size:14px;margin-bottom:10px;">
-        🏢 {v.get("company", "")} &nbsp;·&nbsp;
-        🏙️ {v.get("city", "")} &nbsp;·&nbsp;
+        🏢 {safe_company} &nbsp;·&nbsp;
+        🏙️ {safe_city} &nbsp;·&nbsp;
         💰 {salary} &nbsp;·&nbsp;
         📅 {pub_date}
       </div>
@@ -210,7 +216,7 @@ def render():
     </div>
   </div>
   <div style="color:#9ca3af;font-size:13px;margin-bottom:10px;line-height:1.5;">
-    {sv.get("match_reason", "")[:200]}
+    {safe_reason}
   </div>
   <div style="display:flex;gap:12px;font-size:12px;color:#6b7280;">
     <span>🔍 Семантика: {sem_pct}%</span>

@@ -5,24 +5,24 @@
 
 import os
 
-os.environ["ANONYMIZED_TELEMETRY"] = "False"
-os.environ["CHROMA_TELEMETRY"] = "False"
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
+os.environ.setdefault("CHROMA_TELEMETRY", "False")
 
 
-import chromadb
+try:
+    from chromadb.telemetry.product.posthog import Posthog
 
-# posthog >= 7 changed capture() signature, breaking chromadb 0.6.3 telemetry.
-# Patch _direct_capture to no-op so posthog.capture is never called.
-from chromadb.telemetry.product.posthog import Posthog
+    Posthog._direct_capture = lambda self, event: None
+except ImportError:
+    pass
 
-Posthog._direct_capture = lambda self, event: None
-
-from langchain.schema import Document
 from langchain_chroma import Chroma
+from langchain_core.documents import Document
 from langchain_gigachat import GigaChatEmbeddings
 from loguru import logger
 
 from app.core.config import settings
+from app.core.gigachat_auth import _get_ssl_verify, token_provider
 from app.models.schemas import ResumeProfile, Vacancy
 
 
@@ -61,32 +61,36 @@ class VectorStore:
     VACANCY_COLLECTION = "vacancies"
 
     def __init__(self):
-        self._embeddings = None
-        self._store = None
-        self._client = None
+        self._embeddings: GigaChatEmbeddings | None = None
+        self._store: Chroma | None = None
+        self._current_token: str | None = None
 
-    def _make_embeddings(self) -> GigaChatEmbeddings:
-        from app.core.gigachat_auth import token_provider
-        return GigaChatEmbeddings(
-            access_token=token_provider.get_token(),
-            verify_ssl_certs=False,
-        )
-
-    @property
-    def embeddings(self) -> GigaChatEmbeddings:
-        if self._embeddings is None:
-            self._embeddings = self._make_embeddings()
+    def _get_embeddings(self) -> GigaChatEmbeddings:
+        token = token_provider.get_token()
+        if self._embeddings is None or self._current_token != token:
+            self._embeddings = GigaChatEmbeddings(
+                access_token=token,
+                verify_ssl_certs=_get_ssl_verify(),
+            )
+            self._current_token = token
         return self._embeddings
 
     @property
+    def embeddings(self) -> GigaChatEmbeddings:
+        return self._get_embeddings()
+
+    @property
     def store(self) -> Chroma:
-        if self._store is None:
-            self._embeddings = self._make_embeddings()
+        token = token_provider.get_token()
+        if self._store is None or self._current_token != token:
+            self._embeddings = self._get_embeddings()
             self._store = Chroma(
                 collection_name=self.VACANCY_COLLECTION,
                 embedding_function=self._embeddings,
                 persist_directory=settings.chroma_db_path,
+                collection_metadata={"hnsw:space": "cosine"},
             )
+            self._current_token = token
         return self._store
 
     def add_vacancies(self, vacancies: list[Vacancy]) -> int:
@@ -102,7 +106,7 @@ class VectorStore:
         ids = [v.id for v in new_vacancies]
 
         self.store.add_documents(docs, ids=ids)
-        logger.info(f"Added {len(new_vacancies)} vacancies to vector store")
+        logger.info("Added {} vacancies to vector store", len(new_vacancies))
         return len(new_vacancies)
 
     def search_by_resume(
@@ -112,13 +116,13 @@ class VectorStore:
     ) -> list[tuple[Document, float]]:
         """Семантический поиск вакансий по резюме"""
         query = self._build_search_query(profile)
-        logger.info(f"Vector search with query: {query[:100]}...")
+        logger.info("Vector search with query: {}...", query[:100])
 
         try:
             results = self.store.similarity_search_with_score(query, k=k)
             return results
         except Exception as e:
-            logger.error(f"Vector search error: {e}")
+            logger.error("Vector search error: {}", e)
             return []
 
     def _build_search_query(self, profile: ResumeProfile) -> str:
@@ -150,7 +154,7 @@ class VectorStore:
             self.store._collection.delete(where={"id": {"$ne": ""}})
             logger.info("Vector store cleared")
         except Exception as e:
-            logger.error(f"Clear error: {e}")
+            logger.error("Clear error: {}", e)
 
 
 vector_store = VectorStore()

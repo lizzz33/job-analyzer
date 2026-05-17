@@ -1,11 +1,9 @@
 """Страница настройки предпочтений"""
 
-import os
-
 import httpx
 import streamlit as st
 
-API = os.getenv("API_BASE_URL", "http://localhost:8000")
+from streamlit_app.config import API
 
 CITIES = [
     "Москва",
@@ -64,9 +62,13 @@ def render():
                 step=10_000,
             )
         with col4:
-            max_results = st.slider(
-                "Вакансий за запрос", 10, 100, value=prefs.get("max_results_per_run", 50), step=10
+            include_no_salary = st.checkbox(
+                "Включать вакансии без указанной ЗП",
+                value=prefs.get("include_no_salary", False),
             )
+        max_results = st.slider(
+            "Вакансий за запрос", 10, 100, value=prefs.get("max_results_per_run", 50), step=10
+        )
 
         keywords_str = st.text_input(
             "Ключевые слова для поиска",
@@ -103,6 +105,7 @@ def render():
                 "city": city,
                 "work_format": fmt,
                 "salary_min": salary_min if salary_min > 0 else None,
+                "include_no_salary": include_no_salary,
                 "max_results_per_run": max_results,
                 "keywords": [k.strip() for k in keywords_str.split(",") if k.strip()],
                 "preferred_companies": [c.strip() for c in preferred_str.splitlines() if c.strip()],

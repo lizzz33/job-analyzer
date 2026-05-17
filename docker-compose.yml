@@ -20,6 +20,7 @@ services:
       - API_BASE_URL=http://api:8000
       - GIGACHAT_API_KEY_FILE=/run/secrets/gigachat_api_key
       - GIGACHAT_MODEL=GigaChat-Pro
+      - CORS_ORIGINS=http://localhost:8501,http://streamlit:8501
     restart: unless-stopped
     networks:
       - job_net
@@ -79,7 +80,7 @@ services:
 secrets:
   gigachat_api_key:
     file: ~/secrets/gigachat_api_key.txt
-    
+
 networks:
   job_net:
     driver: bridge

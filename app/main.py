@@ -2,8 +2,10 @@
 FastAPI backend — основной сервис.
 """
 
+import asyncio
 from pathlib import Path
 import shutil
+from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +16,7 @@ from app.core.config import settings
 from app.models.schemas import UserPreferences
 from app.services.resume_parser import resume_parser
 from app.services.state_manager import (
+    delete_profile,
     load_last_report,
     load_preferences,
     load_profile,
@@ -30,12 +33,12 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in settings.cors_origins.split(",")],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-_pipeline_running = False
+_pipeline_lock = asyncio.Lock()
 
 
 @app.get("/")
@@ -58,11 +61,11 @@ async def upload_resume(file: UploadFile = File(...)):
         shutil.copyfileobj(file.file, f)
 
     try:
-        profile = resume_parser.parse(dest)
+        profile = await asyncio.to_thread(resume_parser.parse, dest)
         save_profile(profile)
         return {"status": "ok", "profile": profile.model_dump()}
     except Exception as e:
-        logger.error(f"Resume parse error: {e}")
+        logger.error("Resume parse error: {}", e)
         raise HTTPException(500, f"Ошибка парсинга резюме: {e}") from e
 
 
@@ -72,6 +75,16 @@ def get_profile():
     if not profile:
         raise HTTPException(404, "Резюме не загружено")
     return profile.model_dump()
+
+
+@app.delete("/resume/profile")
+def remove_profile():
+    delete_profile()
+    for ext in (".pdf", ".docx", ".txt"):
+        f = Path(settings.resumes_path) / f"resume{ext}"
+        if f.exists():
+            f.unlink()
+    return {"status": "ok"}
 
 
 # ── Preferences ───────────────────────────────────────────────────────────────
@@ -96,38 +109,33 @@ def get_preferences():
 
 @app.post("/analysis/run")
 async def run_analysis(background_tasks: BackgroundTasks, top_n: int = 10):
-    global _pipeline_running
-    if _pipeline_running:
+    if _pipeline_lock.locked():
         raise HTTPException(409, "Анализ уже запущен, подождите завершения")
 
     profile = load_profile()
     if not profile:
         raise HTTPException(400, "Сначала загрузите резюме")
 
-    _pipeline_running = True
-
     async def _run():
-        global _pipeline_running
-        try:
-            from app.core.pipeline import run_analysis_pipeline
+        async with _pipeline_lock:
+            try:
+                from app.core.pipeline import run_analysis_pipeline
 
-            await run_analysis_pipeline(top_n=top_n)
-        except Exception as e:
-            logger.error(f"Pipeline error: {e}")
-        finally:
-            _pipeline_running = False
+                await run_analysis_pipeline(top_n=top_n)
+            except Exception as e:
+                logger.error("Pipeline error: {}", e)
 
     background_tasks.add_task(_run)
     return {"status": "started"}
 
 
 @app.get("/analysis/status")
-def analysis_status():
-    return {"running": _pipeline_running}
+def analysis_status() -> dict[str, Any]:
+    return {"running": _pipeline_lock.locked()}
 
 
 @app.get("/analysis/report")
-def get_report():
+def get_report() -> dict[str, Any]:
     data = load_last_report()
     if not data:
         return {"vacancies": [], "message": "Отчёт ещё не сформирован"}
@@ -138,7 +146,7 @@ def get_report():
 
 
 @app.get("/stats")
-def get_stats():
+def get_stats() -> dict[str, Any]:
     return {
         "vacancies_in_db": vector_store.get_total_count(),
         "has_resume": load_profile() is not None,
@@ -153,5 +161,5 @@ def clear_data():
 
 
 @app.get("/health")
-def health():
+def health() -> dict[str, str]:
     return {"status": "ok"}

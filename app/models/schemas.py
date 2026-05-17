@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 
 from pydantic import BaseModel, Field
@@ -15,6 +15,7 @@ class UserPreferences(BaseModel):
     city: str = Field("Москва", description="Желаемый город работы")
     work_format: WorkFormat = Field(WorkFormat.any, description="Формат работы")
     salary_min: int | None = Field(None, description="Минимальная зарплата (руб.)")
+    include_no_salary: bool = Field(False, description="Включать вакансии без указанной ЗП")
     excluded_companies: list[str] = Field(default_factory=list, description="Стоп-лист компаний")
     preferred_companies: list[str] = Field(
         default_factory=list, description="Приоритетные компании"
@@ -59,7 +60,7 @@ class ScoredVacancy(BaseModel):
 
 
 class DailyReport(BaseModel):
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     total_found: int
     top_vacancies: list[ScoredVacancy]
     summary_text: str = ""

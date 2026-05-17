@@ -3,7 +3,7 @@
 Запуск: pytest tests/ -v
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 # ── Models ────────────────────────────────────────────────────────────────────
 
@@ -17,7 +17,7 @@ def test_vacancy_model():
         company="TestCo",
         city="Москва",
         url="https://hh.ru/vacancy/123",
-        published_at=datetime.utcnow(),
+        published_at=datetime.now(UTC),
     )
     assert v.id == "123"
     assert v.currency == "RUR"
@@ -49,7 +49,7 @@ def test_scored_vacancy_model():
         company="Co",
         city="MSK",
         url="https://hh.ru/1",
-        published_at=datetime.utcnow(),
+        published_at=datetime.now(UTC),
     )
     sv = ScoredVacancy(vacancy=v, score=0.85, match_reason="Хорошее совпадение навыков")
     assert sv.score == 0.85
@@ -75,42 +75,49 @@ def test_settings_load(monkeypatch):
 # ── HH Fetcher ────────────────────────────────────────────────────────────────
 
 
-def test_hh_parse_vacancy():
-    from app.services.hh_fetcher import _parse_vacancy
+def _make_vacancy_card_html(
+    title="Senior Python Developer",
+    vacancy_id="99999",
+    company="ООО Тест",
+    city="Москва",
+    salary_text="от 200 000 ₽",
+):
+    from bs4 import BeautifulSoup
 
-    item = {
-        "id": "99999",
-        "name": "Senior Python Developer",
-        "employer": {"name": "ООО Тест"},
-        "area": {"name": "Москва"},
-        "salary": {"from": 200000, "to": 350000, "currency": "RUR"},
-        "schedule": {"id": "remote"},
-        "alternate_url": "https://hh.ru/vacancy/99999",
-        "published_at": "2025-01-15T10:00:00+0300",
-        "snippet": {"requirement": "Python 3 лет", "responsibility": "Разработка API"},
-    }
-    v = _parse_vacancy(item)
+    html = f"""
+    <div data-qa="vacancy-serp__vacancy">
+      <a data-qa="serp-item__title" href="https://hh.ru/vacancy/{vacancy_id}">{title}</a>
+      <span data-qa="vacancy-serp__vacancy-employer-text">{company}</span>
+      <span data-qa="vacancy-serp__vacancy-address">{city}</span>
+      <span>{salary_text}</span>
+    </div>
+    """
+    soup = BeautifulSoup(html, "lxml")
+    return soup.select_one('[data-qa="vacancy-serp__vacancy"]')
+
+
+def test_hh_parse_vacancy_card():
+    from app.services.hh_fetcher import _parse_vacancy_card
+
+    card = _make_vacancy_card_html()
+    v = _parse_vacancy_card(card)
     assert v is not None
     assert v.id == "99999"
     assert v.salary_from == 200000
     assert v.company == "ООО Тест"
 
 
-def test_hh_parse_vacancy_missing_salary():
-    from app.services.hh_fetcher import _parse_vacancy
+def test_hh_parse_vacancy_card_missing_salary():
+    from app.services.hh_fetcher import _parse_vacancy_card
 
-    item = {
-        "id": "11111",
-        "name": "Аналитик",
-        "employer": {"name": "Corp"},
-        "area": {"name": "СПб"},
-        "salary": None,
-        "schedule": {"id": "fullDay"},
-        "alternate_url": "https://hh.ru/vacancy/11111",
-        "published_at": "2025-01-10T09:00:00+0300",
-        "snippet": {},
-    }
-    v = _parse_vacancy(item)
+    card = _make_vacancy_card_html(
+        title="Аналитик",
+        vacancy_id="11111",
+        company="Corp",
+        city="СПб",
+        salary_text="",
+    )
+    v = _parse_vacancy_card(card)
     assert v is not None
     assert v.salary_from is None
     assert v.salary_to is None
@@ -132,7 +139,7 @@ def test_vacancy_to_doc():
         salary_to=500000,
         description="Разработка ML-моделей",
         url="https://hh.ru/42",
-        published_at=datetime.utcnow(),
+        published_at=datetime.now(UTC),
     )
     doc = _vacancy_to_doc(v)
     assert "ML Engineer" in doc.page_content
@@ -144,57 +151,35 @@ def test_vacancy_to_doc():
 # ── State Manager ─────────────────────────────────────────────────────────────
 
 
-def test_state_save_load(tmp_path, monkeypatch):
-    monkeypatch.setenv("RESUMES_PATH", str(tmp_path))
-    monkeypatch.setenv("GIGACHAT_CLIENT_ID", "test_client_id")
-    monkeypatch.setenv("GIGACHAT_API_KEY", "test")
-    monkeypatch.setenv("CHROMA_DB_PATH", str(tmp_path / "chroma"))
-
-    import importlib
-
-    import app.core.config as cfg_mod
-    import app.services.state_manager as sm_mod
-
-    importlib.reload(cfg_mod)
-    importlib.reload(sm_mod)
-
+def test_state_save_load(tmp_path):
     from app.models.schemas import UserPreferences, WorkFormat
+    from app.services.state_manager import StateManager
 
+    sm = StateManager(state_path=tmp_path / "user_state.json")
     prefs = UserPreferences(city="Казань", work_format=WorkFormat.remote, salary_min=150000)
-    sm_mod.save_preferences(prefs)
+    sm.save_preferences(prefs)
 
-    loaded = sm_mod.load_preferences()
+    loaded = sm.load_preferences()
     assert loaded is not None
     assert loaded.city == "Казань"
     assert loaded.salary_min == 150000
 
 
-def test_profile_save_load(tmp_path, monkeypatch):
-    monkeypatch.setenv("RESUMES_PATH", str(tmp_path))
-    monkeypatch.setenv("GIGACHAT_CLIENT_ID", "test_client_id")
-    monkeypatch.setenv("GIGACHAT_API_KEY", "test")
-    monkeypatch.setenv("CHROMA_DB_PATH", str(tmp_path / "chroma"))
-
-    import importlib
-
-    import app.core.config as cfg_mod
-    import app.services.state_manager as sm_mod
-
-    importlib.reload(cfg_mod)
-    importlib.reload(sm_mod)
-
+def test_profile_save_load(tmp_path):
     from app.models.schemas import ResumeProfile
+    from app.services.state_manager import StateManager
 
+    sm = StateManager(state_path=tmp_path / "user_state.json")
     profile = ResumeProfile(
         raw_text="Опытный разработчик",
         name="Иван Иванов",
         position="Senior Python Developer",
         skills=["Python", "FastAPI", "PostgreSQL"],
-        experience_years=5.0,
+        experience_years="5 г. 0 мес.",
     )
-    sm_mod.save_profile(profile)
+    sm.save_profile(profile)
 
-    loaded = sm_mod.load_profile()
+    loaded = sm.load_profile()
     assert loaded is not None
     assert loaded.name == "Иван Иванов"
     assert "Python" in loaded.skills
@@ -216,7 +201,7 @@ def test_build_search_queries():
     queries = _build_search_queries(profile, prefs)
 
     assert "Data Engineer" in queries
-    assert "data engineer" in queries
+    # "data engineer" is deduplicated with "Data Engineer" (case-insensitive)
     assert len(queries) <= 5
-    # No duplicates
-    assert len(queries) == len(set(queries))
+    # No duplicates (case-insensitive)
+    assert len(queries) == len({q.lower() for q in queries})

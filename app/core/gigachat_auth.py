@@ -8,12 +8,27 @@ import time
 import uuid
 import warnings
 
-import requests
 from loguru import logger
+import requests
 
 from app.core.config import settings
 
 warnings.filterwarnings("ignore", message="Unverified HTTPS request")
+
+
+def _get_ssl_verify() -> str | bool:
+    """Return SSL cert path for GigaChat requests.
+
+    Logs a warning if no cert is configured — this disables SSL verification.
+    """
+    cert_path = settings.gigachat_ca_cert_path
+    if cert_path:
+        return cert_path
+    logger.warning(
+        "GIGACHAT_CA_CERT_PATH is not set — SSL verification is DISABLED. "
+        "Set this to your Sberbank CA cert path in production."
+    )
+    return False
 
 
 class GigaChatTokenProvider:
@@ -43,7 +58,7 @@ class GigaChatTokenProvider:
             self._TOKEN_URL,
             headers=headers,
             data=payload,
-            verify=False,
+            verify=_get_ssl_verify(),
         )
         response.raise_for_status()
 

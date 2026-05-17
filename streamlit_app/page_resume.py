@@ -1,11 +1,9 @@
 """Страница загрузки и просмотра резюме"""
 
-import os
-
 import httpx
 import streamlit as st
 
-API = os.getenv("API_BASE_URL", "http://localhost:8000")
+from streamlit_app.config import API
 
 
 def render():

@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 from pydantic import Field, model_validator
@@ -14,6 +13,7 @@ class Settings(BaseSettings):
     gigachat_api_key: str = Field("", env="GIGACHAT_API_KEY")
     gigachat_scope: str = Field("GIGACHAT_API_PERS", env="GIGACHAT_SCOPE")
     gigachat_model: str = Field("GigaChat-Pro", env="GIGACHAT_MODEL")
+    gigachat_ca_cert_path: str = Field("", env="GIGACHAT_CA_CERT_PATH")
 
     # Scheduler
     daily_report_hour: int = Field(9, env="DAILY_REPORT_HOUR")
@@ -25,6 +25,9 @@ class Settings(BaseSettings):
 
     # API
     api_base_url: str = Field("http://api:8000", env="API_BASE_URL")
+    cors_origins: str = Field(
+        "http://localhost:8501", env="CORS_ORIGINS", description="Comma-separated list of allowed origins"
+    )
 
     # Secret file paths
     gigachat_api_key_file: str = Field("", env="GIGACHAT_API_KEY_FILE")

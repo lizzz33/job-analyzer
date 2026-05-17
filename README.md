@@ -62,7 +62,7 @@ docker compose up --build
 
 1. **Резюме** — загрузить PDF или DOCX
 2. **Предпочтения** — город, формат работы, зарплата, ключевые слова
-3. **Анализ** — нажать «Запустить», ждать 2-5 минут
+3. **Анализ** — нажать «Запустить»
 4. **Результаты** — ранжированные вакансии, фильтры, экспорт CSV
 
 ---
@@ -74,17 +74,20 @@ job_analyzer/
 ├── app/
 │   ├── core/
 │   │   ├── config.py          # pydantic-settings
+│   │   ├── gigachat_auth.py   # Token provider с кэшированием
+│   │   ├── llm.py             # GigaChat LLM factory (shared)
 │   │   └── pipeline.py        # Главный пайплайн
 │   ├── models/schemas.py      # Pydantic-модели
 │   ├── services/
 │   │   ├── resume_parser.py   # PDF/DOCX → профиль (GigaChat)
-│   │   ├── hh_fetcher.py      # hh.ru API
+│   │   ├── hh_fetcher.py      # hh.ru HTML-парсинг
 │   │   ├── vector_store.py    # ChromaDB + embeddings
 │   │   ├── scorer.py          # LLM-ранжирование
-│   │   └── state_manager.py   # JSON-стейт
+│   │   └── state_manager.py   # JSON-стейт с file-locking
 │   └── main.py                # FastAPI
 ├── streamlit_app/
 │   ├── main.py                # Точка входа
+│   ├── config.py              # Общий API URL
 │   ├── sidebar.py
 │   ├── page_resume.py
 │   ├── page_preferences.py
@@ -92,7 +95,7 @@ job_analyzer/
 │   └── page_results.py        # Дашборд с графиками
 ├── scheduler/
 │   └── daily_job.py           # APScheduler — ежедневный запуск
-├── tests/test_core.py
+├── tests/                     # 112 тестов
 ├── docker-compose.yml
 ├── Dockerfile.api
 ├── Dockerfile.streamlit
@@ -106,16 +109,17 @@ job_analyzer/
 
 | Переменная | Обязательная | По умолчанию | Описание |
 |---|---|---|---|
-| `GIGACHAT_API_KEY` | ✅* | — | Base64 ключ GigaChat (или через secrets) |
-| `GIGACHAT_API_KEY_FILE` | ✅* | — | Путь к файлу с ключом (Docker secrets) |
+| `GIGACHAT_API_KEY` | ✅* | — | Base64 ключ GigaChat API |
+| `GIGACHAT_API_KEY_FILE` | ✅* | — | Путь к файлу с ключом |
 | `GIGACHAT_SCOPE` | — | `GIGACHAT_API_PERS` | Для физлиц / юрлиц |
 | `GIGACHAT_MODEL` | — | `GigaChat-Pro` | Модель GigaChat |
+| `GIGACHAT_CA_CERT_PATH` | — | — | Путь к Sberbank CA-сертификату |
+| `CORS_ORIGINS` | — | `http://localhost:8501` | Разрешённые CORS origins (через запятую) |
+| `API_BASE_URL` | — | `http://api:8000` | URL API-сервиса |
 | `DAILY_REPORT_HOUR` | — | `9` | Час ежедневного запуска (UTC) |
 | `DAILY_REPORT_MINUTE` | — | `0` | Минута запуска |
 | `CHROMA_DB_PATH` | — | `/app/data/chroma_db` | Путь к ChromaDB |
 | `RESUMES_PATH` | — | `/app/data/resumes` | Путь к резюме и стейту |
-
-*\* Достаточно одного из `GIGACHAT_API_KEY` или `GIGACHAT_API_KEY_FILE`*
 
 ---
 

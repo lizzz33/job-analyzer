@@ -3,11 +3,12 @@
 HH.ru закрыл публичный API, поэтому парсим HTML.
 """
 
+import asyncio
+from datetime import UTC, datetime
 import re
-from datetime import datetime
 
-import httpx
 from bs4 import BeautifulSoup, Tag
+import httpx
 from loguru import logger
 
 from app.models.schemas import UserPreferences, Vacancy, WorkFormat
@@ -42,7 +43,7 @@ CITY_AREA_MAP = {
 SCHEDULE_MAP = {
     WorkFormat.remote: "remote",
     WorkFormat.office: "fullDay",
-    WorkFormat.hybrid: "flyInFlyOut",
+    WorkFormat.hybrid: "flexible",
     WorkFormat.any: None,
 }
 
@@ -83,6 +84,36 @@ def _parse_salary(text: str) -> tuple[int | None, int | None, str]:
         return val, val, currency
 
     return None, None, currency
+
+
+def _extract_published_at(card: Tag) -> datetime:
+    """Extract publication date from vacancy card."""
+    time_el = card.select_one('[data-qa="vacancy-serp__vacancy-date"]')
+    if time_el:
+        date_text = time_el.get_text(strip=True)
+        # Format: "15 января" or "2 марта 2025"
+        months = {
+            "января": 1,
+            "февраля": 2,
+            "марта": 3,
+            "апреля": 4,
+            "мая": 5,
+            "июня": 6,
+            "июля": 7,
+            "августа": 8,
+            "сентября": 9,
+            "октября": 10,
+            "ноября": 11,
+            "декабря": 12,
+        }
+        match = re.match(r"(\d+)\s+(\w+)(?:\s+(\d{4}))?", date_text)
+        if match:
+            day = int(match.group(1))
+            month = months.get(match.group(2))
+            year = int(match.group(3)) if match.group(3) else datetime.now(UTC).year
+            if month:
+                return datetime(year, month, day, tzinfo=UTC)
+    return datetime.now(UTC)
 
 
 def _extract_work_format(card: Tag) -> str:
@@ -139,56 +170,93 @@ def _parse_vacancy_card(card: Tag) -> Vacancy | None:
             work_format=_extract_work_format(card),
             description="",
             url=f"https://hh.ru/vacancy/{vid}",
-            published_at=datetime.utcnow(),
+            published_at=_extract_published_at(card),
             source="hh.ru",
         )
     except Exception as e:
-        logger.warning(f"Failed to parse vacancy card: {e}")
+        logger.warning("Failed to parse vacancy card: {}", e)
         return None
 
 
 class HHFetcher:
-    async def fetch_vacancies(self, query: str, prefs: UserPreferences) -> list[Vacancy]:
+    async def fetch_vacancies(
+        self,
+        query: str,
+        prefs: UserPreferences,
+        known_ids: set[str] | None = None,
+    ) -> list[Vacancy]:
         area_id = CITY_AREA_MAP.get(prefs.city.lower().strip(), 1)
-        params: dict = {
+        base_params: dict = {
             "text": query,
             "area": area_id,
-            "per_page": min(prefs.max_results_per_run, 100),
-            "page": 0,
+            "per_page": 20,
             "order_by": "publication_time",
             "hhtmFrom": "vacancy_search_list",
         }
         if prefs.salary_min and prefs.salary_min > 0:
-            params["salary"] = prefs.salary_min
-            params["only_with_salary"] = "true"
+            base_params["salary"] = prefs.salary_min
+            if not prefs.include_no_salary:
+                base_params["only_with_salary"] = "true"
         schedule = SCHEDULE_MAP.get(prefs.work_format)
         if schedule:
-            params["schedule"] = schedule
+            base_params["schedule"] = schedule
 
+        seen_ids: set[str] = set()
         vacancies: list[Vacancy] = []
+        incremental = known_ids is not None
+
         async with httpx.AsyncClient(
             headers={"User-Agent": USER_AGENT}, follow_redirects=True
         ) as client:
-            try:
-                resp = await client.get(HH_SEARCH_URL, params=params, timeout=15.0)
-                resp.raise_for_status()
-                soup = BeautifulSoup(resp.text, "lxml")
-                cards = soup.select('[data-qa="vacancy-serp__vacancy"]')
-                logger.info(f"HH scrape: '{query}' → {len(cards)} results")
+            page = 0
+            while len(vacancies) < prefs.max_results_per_run:
+                try:
+                    resp = await client.get(
+                        HH_SEARCH_URL, params={**base_params, "page": page}, timeout=15.0
+                    )
+                    if resp.status_code == 404:
+                        break
+                    resp.raise_for_status()
+                    soup = BeautifulSoup(resp.text, "lxml")
+                    cards = soup.select('[data-qa="vacancy-serp__vacancy"]')
+                    if not cards:
+                        break
 
-                for card in cards:
-                    v = _parse_vacancy_card(card)
-                    if v is None:
-                        continue
-                    if prefs.excluded_companies and any(
-                        ex.lower() in v.company.lower() for ex in prefs.excluded_companies if ex
-                    ):
-                        continue
-                    vacancies.append(v)
-            except httpx.HTTPStatusError as e:
-                logger.error(f"HH scrape error {e.response.status_code}")
-            except Exception as e:
-                logger.error(f"HH scrape error: {e}")
+                    hit_known = False
+                    page_vacancies = 0
+                    for card in cards:
+                        v = _parse_vacancy_card(card)
+                        if v is None or v.id in seen_ids:
+                            continue
+                        if prefs.excluded_companies and any(
+                            ex.lower() in v.company.lower()
+                            for ex in prefs.excluded_companies
+                            if ex
+                        ):
+                            continue
+                        if incremental and v.id in known_ids:
+                            hit_known = True
+                            continue
+                        seen_ids.add(v.id)
+                        vacancies.append(v)
+                        page_vacancies += 1
+
+                    logger.info("HH scrape: '{}' page {} → {}", query, page, page_vacancies)
+
+                    if incremental and hit_known:
+                        break
+                    if page_vacancies == 0:
+                        break
+                    page += 1
+                    await asyncio.sleep(1.5)
+                except httpx.HTTPStatusError as e:
+                    logger.error("HH scrape error {}", e.response.status_code)
+                    break
+                except Exception as e:
+                    logger.error("HH scrape error: {}", e)
+                    break
+
+        logger.info("HH scrape: '{}' total → {}", query, len(vacancies))
         return vacancies
 
     async def get_vacancy_details(self, vacancy_id: str) -> str | None:
@@ -196,16 +264,14 @@ class HHFetcher:
             headers={"User-Agent": USER_AGENT}, follow_redirects=True
         ) as client:
             try:
-                resp = await client.get(
-                    f"{HH_VACANCY_URL}/{vacancy_id}", timeout=15.0
-                )
+                resp = await client.get(f"{HH_VACANCY_URL}/{vacancy_id}", timeout=15.0)
                 resp.raise_for_status()
                 soup = BeautifulSoup(resp.text, "lxml")
                 desc_el = soup.select_one('[data-qa="vacancy-description"]')
                 if desc_el:
                     return desc_el.get_text(" ", strip=True)[:3000]
             except Exception as e:
-                logger.warning(f"Details fetch failed {vacancy_id}: {e}")
+                logger.warning("Details fetch failed {}: {}", vacancy_id, e)
         return None
 
 

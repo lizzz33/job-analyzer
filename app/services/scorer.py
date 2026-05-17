@@ -3,18 +3,30 @@ LLM-ранжирование вакансий через GigaChat.
 Этап 2 после семантического поиска в Chroma.
 """
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import re
+import time
 
-from langchain.prompts import PromptTemplate
-from langchain.schema import Document
-from langchain_gigachat import GigaChat
+from langchain_core.documents import Document
+from langchain_core.prompts import PromptTemplate
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from app.core.config import settings
-from app.core.gigachat_auth import token_provider
+from app.core.llm import GigaChatLLMFactory
 from app.models.schemas import ResumeProfile, ScoredVacancy, UserPreferences, Vacancy
+
+# ChromaDB cosine distance range for similar ML vacancies.
+# Observed range: ~0.10–0.20. Rescale to spread scores across [0, 1].
+COSINE_DIST_BEST = 0.08
+COSINE_DIST_WORST = 0.22
+
+# Weight for combining semantic and LLM scores.
+SEMANTIC_WEIGHT = 0.4
+LLM_WEIGHT = 0.6
+
+# Delay between LLM calls to avoid rate-limiting (seconds).
+LLM_CALL_DELAY = 0.5
 
 SCORE_PROMPT = PromptTemplate.from_template("""
 Ты — HR-аналитик. Оцени соответствие кандидата данной вакансии.
@@ -56,23 +68,18 @@ DAILY_SUMMARY_PROMPT = PromptTemplate.from_template("""
 """)
 
 
+def _normalize_semantic_score(raw_distance: float) -> float:
+    """Rescale cosine distance from [BEST, WORST] to [1.0, 0.0]."""
+    return max(0.0, min(1.0, (COSINE_DIST_WORST - raw_distance) / (COSINE_DIST_WORST - COSINE_DIST_BEST)))
+
+
 class LLMScorer:
     def __init__(self):
-        self._llm = None
-        self._current_token = None
+        self._factory = GigaChatLLMFactory(temperature=0.1)
 
     @property
-    def llm(self) -> GigaChat:
-        token = token_provider.get_token()
-        if self._llm is None or self._current_token != token:
-            self._llm = GigaChat(
-                access_token=token,
-                verify_ssl_certs=False,
-                model=settings.gigachat_model,
-                temperature=0.1,
-            )
-            self._current_token = token
-        return self._llm
+    def llm(self):
+        return self._factory.get()
 
     @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=1, max=5))
     def _score_one(
@@ -130,37 +137,47 @@ class LLMScorer:
         Принимает результаты семантического поиска,
         прогоняет топ через LLM для финального ранжирования.
         """
-        # Берём топ кандидатов из Chroma для LLM-оценки
         candidates = docs_with_scores[: min(top_n * 2, len(docs_with_scores))]
         results = []
 
-        for doc, semantic_score in candidates:
+        def _score_candidate(item: tuple[Document, float]) -> ScoredVacancy | None:
+            doc, raw_distance = item
             vid = doc.metadata.get("id", "")
             vacancy = vacancies_map.get(vid)
-
-            # Нормализуем score (Chroma возвращает distance, меньше = лучше)
-            norm_semantic = max(0.0, 1.0 - min(semantic_score, 1.0))
+            norm_semantic = _normalize_semantic_score(raw_distance)
 
             try:
                 llm_score, reason = self._score_one(doc.page_content, profile, prefs)
-                logger.debug(f"LLM score for '{doc.metadata.get('title')}': {llm_score}")
+                logger.debug("LLM score for '{}': {}", doc.metadata.get("title"), llm_score)
             except Exception as e:
-                logger.warning(f"LLM scoring failed for {vid}: {e}")
+                logger.warning("LLM scoring failed for {}: {}", vid, e)
                 llm_score = norm_semantic
                 reason = "Оценка по семантическому сходству"
 
-            combined = 0.4 * norm_semantic + 0.6 * llm_score
+            if LLM_CALL_DELAY > 0:
+                time.sleep(LLM_CALL_DELAY)
+
+            combined = SEMANTIC_WEIGHT * norm_semantic + LLM_WEIGHT * llm_score
 
             if vacancy:
-                results.append(
-                    ScoredVacancy(
-                        vacancy=vacancy,
-                        score=round(combined, 3),
-                        match_reason=reason,
-                        semantic_score=round(norm_semantic, 3),
-                        llm_score=round(llm_score, 3),
-                    )
+                return ScoredVacancy(
+                    vacancy=vacancy,
+                    score=round(combined, 3),
+                    match_reason=reason,
+                    semantic_score=round(norm_semantic, 3),
+                    llm_score=round(llm_score, 3),
                 )
+            return None
+
+        with ThreadPoolExecutor(max_workers=min(2, len(candidates))) as executor:
+            futures = {executor.submit(_score_candidate, c): c for c in candidates}
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                    if result:
+                        results.append(result)
+                except Exception as e:
+                    logger.warning("Scoring thread failed: {}", e)
 
         results.sort(key=lambda x: x.score, reverse=True)
         return results[:top_n]
@@ -188,7 +205,7 @@ class LLMScorer:
             response = self.llm.invoke(prompt)
             return response.content if hasattr(response, "content") else str(response)
         except Exception as e:
-            logger.error(f"Summary generation failed: {e}")
+            logger.error("Summary generation failed: {}", e)
             return f"Найдено {len(scored)} подходящих вакансий."
 
 
