@@ -8,8 +8,14 @@ from streamlit_app.config import API
 
 def _get_stats():
     try:
-        r = httpx.get(f"{API}/stats", timeout=3)
-        return r.json()
+        r = httpx.get(f"{API}/stats", timeout=5)
+        if r.status_code == 200:
+            return r.json()
+        return None
+    except httpx.ConnectError:
+        return None
+    except httpx.TimeoutException:
+        return None
     except Exception:
         return None
 

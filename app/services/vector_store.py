@@ -3,18 +3,11 @@
 Хранит вакансии как документы с embeddings от GigaChat.
 """
 
+import asyncio
 import os
 
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
 os.environ.setdefault("CHROMA_TELEMETRY", "False")
-
-
-try:
-    from chromadb.telemetry.product.posthog import Posthog
-
-    Posthog._direct_capture = lambda self, event: None
-except ImportError:
-    pass
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
@@ -22,8 +15,12 @@ from langchain_gigachat import GigaChatEmbeddings
 from loguru import logger
 
 from app.core.config import settings
-from app.core.gigachat_auth import _get_ssl_verify, token_provider
+from app.core.gigachat_auth import get_verify_ssl_bool, token_provider
 from app.models.schemas import ResumeProfile, Vacancy
+
+# Limits for embedding queries.
+SKILLS_IN_QUERY = 10
+QUERY_SUMMARY_MAX = 500
 
 
 def _vacancy_to_doc(v: Vacancy) -> Document:
@@ -42,18 +39,22 @@ def _vacancy_to_doc(v: Vacancy) -> Document:
         f"Описание: {v.description}"
     ).strip()
 
+    metadata: dict = {
+        "id": v.id,
+        "title": v.title,
+        "company": v.company,
+        "city": v.city,
+        "url": v.url,
+        "published_at": v.published_at.isoformat(),
+    }
+    if v.salary_from is not None:
+        metadata["salary_from"] = v.salary_from
+    if v.salary_to is not None:
+        metadata["salary_to"] = v.salary_to
+
     return Document(
         page_content=content,
-        metadata={
-            "id": v.id,
-            "title": v.title,
-            "company": v.company,
-            "city": v.city,
-            "url": v.url,
-            "salary_from": v.salary_from or 0,
-            "salary_to": v.salary_to or 0,
-            "published_at": v.published_at.isoformat(),
-        },
+        metadata=metadata,
     )
 
 
@@ -70,7 +71,7 @@ class VectorStore:
         if self._embeddings is None or self._current_token != token:
             self._embeddings = GigaChatEmbeddings(
                 access_token=token,
-                verify_ssl_certs=_get_ssl_verify(),
+                verify_ssl_certs=get_verify_ssl_bool(),
             )
             self._current_token = token
         return self._embeddings
@@ -81,16 +82,21 @@ class VectorStore:
 
     @property
     def store(self) -> Chroma:
-        token = token_provider.get_token()
-        if self._store is None or self._current_token != token:
-            self._embeddings = self._get_embeddings()
+        if self._store is None:
             self._store = Chroma(
                 collection_name=self.VACANCY_COLLECTION,
-                embedding_function=self._embeddings,
+                embedding_function=self._get_embeddings(),
                 persist_directory=settings.chroma_db_path,
                 collection_metadata={"hnsw:space": "cosine"},
             )
-            self._current_token = token
+            self._current_token = token_provider.get_token()
+        else:
+            # Update embeddings client on token rotation without recreating Chroma.
+            token = token_provider.get_token()
+            if self._current_token != token:
+                self._embeddings = self._get_embeddings()
+                self._store._embedding_function = self._embeddings
+                self._current_token = token
         return self._store
 
     def add_vacancies(self, vacancies: list[Vacancy]) -> int:
@@ -109,6 +115,9 @@ class VectorStore:
         logger.info("Added {} vacancies to vector store", len(new_vacancies))
         return len(new_vacancies)
 
+    async def aadd_vacancies(self, vacancies: list[Vacancy]) -> int:
+        return await asyncio.to_thread(self.add_vacancies, vacancies)
+
     def search_by_resume(
         self,
         profile: ResumeProfile,
@@ -125,15 +134,22 @@ class VectorStore:
             logger.error("Vector search error: {}", e)
             return []
 
+    async def asearch_by_resume(
+        self,
+        profile: ResumeProfile,
+        k: int = 20,
+    ) -> list[tuple[Document, float]]:
+        return await asyncio.to_thread(self.search_by_resume, profile, k=k)
+
     def _build_search_query(self, profile: ResumeProfile) -> str:
         parts = []
         if profile.position:
             parts.append(profile.position)
         if profile.skills:
-            parts.append(", ".join(profile.skills[:10]))
+            parts.append(", ".join(profile.skills[:SKILLS_IN_QUERY]))
         if profile.summary:
-            parts.append(profile.summary[:500])
-        return " ".join(parts) or profile.raw_text[:500]
+            parts.append(profile.summary[:QUERY_SUMMARY_MAX])
+        return " ".join(parts) or profile.raw_text[:QUERY_SUMMARY_MAX]
 
     def _get_existing_ids(self) -> set[str]:
         try:
@@ -142,6 +158,9 @@ class VectorStore:
             return set(result.get("ids", []))
         except Exception:
             return set()
+
+    async def _aget_existing_ids(self) -> set[str]:
+        return await asyncio.to_thread(self._get_existing_ids)
 
     def get_total_count(self) -> int:
         try:
@@ -156,5 +175,3 @@ class VectorStore:
         except Exception as e:
             logger.error("Clear error: {}", e)
 
-
-vector_store = VectorStore()

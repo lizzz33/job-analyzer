@@ -10,14 +10,15 @@ from apscheduler.triggers.cron import CronTrigger
 from loguru import logger
 
 from app.core.config import settings
+from app.core.deps import get_state_manager
 from app.core.pipeline import run_analysis_pipeline
-from app.services.state_manager import load_preferences, load_profile
 
 
 async def daily_job():
     logger.info("Daily analysis job started")
-    profile = load_profile()
-    prefs = load_preferences()
+    state = get_state_manager()
+    profile = state.load_profile()
+    prefs = state.load_preferences()
 
     if not profile:
         logger.warning("No resume loaded, skipping daily job")
@@ -30,10 +31,12 @@ async def daily_job():
             top_n=10,
         )
         logger.info(
-            f"Daily job done: {report.total_found} fetched, {len(report.top_vacancies)} ranked"
+            "Daily job done: {} fetched, {} ranked",
+            report.total_found,
+            len(report.top_vacancies),
         )
     except Exception as e:
-        logger.error(f"Daily job failed: {e}")
+        logger.error("Daily job failed: {}", e)
 
 
 async def main():
@@ -49,8 +52,9 @@ async def main():
     )
     scheduler.start()
     logger.info(
-        f"Scheduler started. Daily job at "
-        f"{settings.daily_report_hour:02d}:{settings.daily_report_minute:02d} UTC"
+        "Scheduler started. Daily job at {:02d}:{:02d} UTC",
+        settings.daily_report_hour,
+        settings.daily_report_minute,
     )
 
     await daily_job()  # запуск сразу при старте

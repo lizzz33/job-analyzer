@@ -9,8 +9,8 @@ from app.services.state_manager import StateManager
 
 @pytest.fixture
 def sm(tmp_path):
-    """Fresh StateManager pointing at a temp file — no global state pollution."""
-    return StateManager(state_path=tmp_path / "user_state.json")
+    """Fresh StateManager pointing at a temp dir — no global state pollution."""
+    return StateManager(state_dir=tmp_path)
 
 
 class TestStateBasic:
@@ -83,18 +83,18 @@ class TestSearchParams:
 
 class TestCorruptedState:
     def test_corrupted_json_returns_none_for_profile(self, sm):
-        sm.state_path.parent.mkdir(parents=True, exist_ok=True)
-        sm.state_path.write_text("{invalid json", encoding="utf-8")
+        sm._profile.path.parent.mkdir(parents=True, exist_ok=True)
+        sm._profile.path.write_text("{invalid json", encoding="utf-8")
 
         assert sm.load_profile() is None
 
     def test_corrupted_json_returns_none_for_preferences(self, sm):
-        sm.state_path.parent.mkdir(parents=True, exist_ok=True)
-        sm.state_path.write_text("{invalid json", encoding="utf-8")
+        sm._prefs.path.parent.mkdir(parents=True, exist_ok=True)
+        sm._prefs.path.write_text("{invalid json", encoding="utf-8")
 
         assert sm.load_preferences() is None
 
-    def test_missing_state_file_returns_empty(self, sm):
+    def test_missing_state_files_returns_empty(self, sm):
         assert sm.load_profile() is None
         assert sm.load_preferences() is None
         assert sm.load_search_params() is None
@@ -116,7 +116,7 @@ class TestLastReport:
         assert sm.load_last_report() == []
 
 
-class TestAtomicUpdate:
+class TestSeparateFiles:
     def test_concurrent_saves_dont_corrupt(self, sm):
         prefs = UserPreferences(city="Москва", work_format=WorkFormat.remote)
         sm.save_preferences(prefs)

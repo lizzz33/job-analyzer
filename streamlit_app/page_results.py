@@ -10,15 +10,22 @@ import streamlit as st
 
 from streamlit_app.config import API
 
+PAGE_SIZE = 10
 
-def _load_report() -> list[dict]:
+
+def _load_report() -> tuple[list[dict], str | None]:
+    """Load report from API. Returns (vacancies, error_message)."""
     try:
-        r = httpx.get(f"{API}/analysis/report", timeout=5)
+        r = httpx.get(f"{API}/analysis/report", timeout=10)
         if r.status_code == 200:
-            return r.json().get("vacancies", [])
-    except Exception:
-        pass
-    return []
+            return r.json().get("vacancies", []), None
+        return [], f"Ошибка API: {r.status_code}"
+    except httpx.ConnectError:
+        return [], "API недоступен — проверьте, запущен ли сервер"
+    except httpx.TimeoutException:
+        return [], "API не ответил за 10с — попробуйте позже"
+    except Exception as e:
+        return [], f"Ошибка: {e}"
 
 
 def _score_class(score: float) -> str:
@@ -41,10 +48,64 @@ def _salary_str(v: dict) -> str:
     return "не указана"
 
 
+def _render_vacancy_card(i: int, sv: dict) -> None:
+    v = sv["vacancy"]
+    score_pct = int(sv["score"] * 100)
+    s_class = _score_class(sv["score"])
+    sem_pct = int(sv.get("semantic_score", 0) * 100)
+    llm_pct = int(sv.get("llm_score", 0) * 100)
+    salary = _salary_str(sv)
+    pub_date = v.get("published_at", "")[:10] if v.get("published_at") else ""
+
+    safe_url = html.escape(v.get("url", "#"))
+    safe_title = html.escape(v.get("title", ""))
+    safe_company = html.escape(v.get("company", ""))
+    safe_city = html.escape(v.get("city", ""))
+    safe_reason = html.escape(sv.get("match_reason", "")[:200])
+
+    st.markdown(
+        f"""
+<div class="vacancy-card">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+    <div style="flex:1;">
+      <div style="font-size:17px;font-weight:600;margin-bottom:2px;">
+        {i}. <a href="{safe_url}" target="_blank"
+              style="color:#c7d2fe;text-decoration:none;">{safe_title}</a>
+      </div>
+      <div style="color:#6b7280;font-size:14px;margin-bottom:10px;">
+        🏢 {safe_company} &nbsp;·&nbsp;
+        🏙️ {safe_city} &nbsp;·&nbsp;
+        💰 {salary} &nbsp;·&nbsp;
+        📅 {pub_date}
+      </div>
+    </div>
+    <div style="text-align:right;min-width:80px;">
+      <span class="score-badge {s_class}">{score_pct}%</span>
+    </div>
+  </div>
+  <div style="color:#9ca3af;font-size:13px;margin-bottom:10px;line-height:1.5;">
+    {safe_reason}
+  </div>
+  <div style="display:flex;gap:12px;font-size:12px;color:#6b7280;">
+    <span>🔍 Семантика: {sem_pct}%</span>
+    <span>🤖 LLM: {llm_pct}%</span>
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
 def render():
     st.title("📊 Результаты подбора")
 
-    vacancies = _load_report()
+    vacancies, error = _load_report()
+
+    if error:
+        st.error(f"**Не удалось загрузить результаты:** {error}")
+        if st.button("🔄 Повторить", type="primary"):
+            st.rerun()
+        return
 
     if not vacancies:
         st.info("Результатов пока нет. Запустите анализ на странице **🔍 Анализ**.")
@@ -177,55 +238,46 @@ def render():
             st.plotly_chart(fig2, use_container_width=True)
 
     st.markdown("---")
-    st.markdown(f"### Вакансии ({len(filtered)} из {len(vacancies)})")
+
+    # ── Пагинация ─────────────────────────────────────────────────────────────
+    total = len(filtered)
+    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+
+    if "results_page" not in st.session_state:
+        st.session_state["results_page"] = 1
+    page = min(st.session_state["results_page"], total_pages)
+
+    start = (page - 1) * PAGE_SIZE
+    end = min(start + PAGE_SIZE, total)
+    page_items = filtered[start:end]
+
+    st.markdown(f"### Вакансии ({total}) — страница {page} из {total_pages}")
+
+    col_prev, _, col_next = st.columns([1, 3, 1])
+    with col_prev:
+        if page > 1 and st.button("← Назад"):
+            st.session_state["results_page"] = page - 1
+            st.rerun()
+    with col_next:
+        if page < total_pages and st.button("Вперёд →"):
+            st.session_state["results_page"] = page + 1
+            st.rerun()
 
     # ── Карточки вакансий ─────────────────────────────────────────────────────
-    for i, sv in enumerate(filtered, 1):
-        v = sv["vacancy"]
-        score_pct = int(sv["score"] * 100)
-        s_class = _score_class(sv["score"])
-        sem_pct = int(sv.get("semantic_score", 0) * 100)
-        llm_pct = int(sv.get("llm_score", 0) * 100)
-        salary = _salary_str(sv)
-        pub_date = v.get("published_at", "")[:10] if v.get("published_at") else ""
+    for i, sv in enumerate(page_items, start=start + 1):
+        _render_vacancy_card(i, sv)
 
-        safe_url = html.escape(v.get("url", "#"))
-        safe_title = html.escape(v.get("title", ""))
-        safe_company = html.escape(v.get("company", ""))
-        safe_city = html.escape(v.get("city", ""))
-        safe_reason = html.escape(sv.get("match_reason", "")[:200])
-
-        st.markdown(
-            f"""
-<div class="vacancy-card">
-  <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-    <div style="flex:1;">
-      <div style="font-size:17px;font-weight:600;margin-bottom:2px;">
-        {i}. <a href="{safe_url}" target="_blank"
-              style="color:#c7d2fe;text-decoration:none;">{safe_title}</a>
-      </div>
-      <div style="color:#6b7280;font-size:14px;margin-bottom:10px;">
-        🏢 {safe_company} &nbsp;·&nbsp;
-        🏙️ {safe_city} &nbsp;·&nbsp;
-        💰 {salary} &nbsp;·&nbsp;
-        📅 {pub_date}
-      </div>
-    </div>
-    <div style="text-align:right;min-width:80px;">
-      <span class="score-badge {s_class}">{score_pct}%</span>
-    </div>
-  </div>
-  <div style="color:#9ca3af;font-size:13px;margin-bottom:10px;line-height:1.5;">
-    {safe_reason}
-  </div>
-  <div style="display:flex;gap:12px;font-size:12px;color:#6b7280;">
-    <span>🔍 Семантика: {sem_pct}%</span>
-    <span>🤖 LLM: {llm_pct}%</span>
-  </div>
-</div>
-""",
-            unsafe_allow_html=True,
-        )
+    # ── Нижняя пагинация ──────────────────────────────────────────────────────
+    if total_pages > 1:
+        col_prev2, _, col_next2 = st.columns([1, 3, 1])
+        with col_prev2:
+            if page > 1 and st.button("← Назад", key="prev_bottom"):
+                st.session_state["results_page"] = page - 1
+                st.rerun()
+        with col_next2:
+            if page < total_pages and st.button("Вперёд →", key="next_bottom"):
+                st.session_state["results_page"] = page + 1
+                st.rerun()
 
     # ── Экспорт CSV ──────────────────────────────────────────────────────────
     st.markdown("---")

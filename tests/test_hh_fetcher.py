@@ -98,8 +98,8 @@ class TestScheduleMap:
 
         assert SCHEDULE_MAP[WorkFormat.remote] == "remote"
         assert SCHEDULE_MAP[WorkFormat.office] == "fullDay"
-        assert SCHEDULE_MAP[WorkFormat.hybrid] == "flexible"
-        assert SCHEDULE_MAP[WorkFormat.any] is None
+        assert SCHEDULE_MAP[WorkFormat.hybrid] == "hybrid"
+        assert SCHEDULE_MAP[WorkFormat.any_format] is None
 
 
 # ── _parse_vacancy_card ────────────────────────────────────────────────────────

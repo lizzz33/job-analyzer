@@ -109,17 +109,17 @@ class TestRunAnalysisPipeline:
         ]
 
         mock_store = MagicMock()
-        mock_store._get_existing_ids.return_value = set()
-        mock_store.add_vacancies.return_value = 1
-        mock_store.search_by_resume.return_value = []  # empty → "no results" path
+        mock_store._aget_existing_ids = AsyncMock(return_value=set())
+        mock_store.aadd_vacancies = AsyncMock(return_value=1)
+        mock_store.asearch_by_resume = AsyncMock(return_value=[])
 
         mock_scorer = MagicMock()
         mock_scorer.generate_daily_summary.return_value = "No results"
 
         with (
-            patch("app.core.pipeline.hh_fetcher", mock_fetcher),
-            patch("app.core.pipeline.vector_store", mock_store),
-            patch("app.core.pipeline.llm_scorer", mock_scorer),
+            patch("app.core.deps.get_hh_fetcher", return_value=mock_fetcher),
+            patch("app.core.deps.get_vector_store", return_value=mock_store),
+            patch("app.core.deps.get_llm_scorer", return_value=mock_scorer),
             patch("app.core.pipeline.load_profile", return_value=None),
             patch("app.core.pipeline.load_preferences", return_value=None),
             patch("app.core.pipeline.load_search_params", return_value=None),
@@ -164,18 +164,18 @@ class TestRunAnalysisPipeline:
         )
 
         mock_store = MagicMock()
-        mock_store._get_existing_ids.return_value = set()
-        mock_store.add_vacancies.return_value = 1
-        mock_store.search_by_resume.return_value = [(doc, 10.0)]
+        mock_store._aget_existing_ids = AsyncMock(return_value=set())
+        mock_store.aadd_vacancies = AsyncMock(return_value=1)
+        mock_store.asearch_by_resume = AsyncMock(return_value=[(doc, 10.0)])
 
         mock_scorer = MagicMock()
         mock_scorer.score_vacancies.return_value = [scored_vac]
         mock_scorer.generate_daily_summary.return_value = "Great results"
 
         with (
-            patch("app.core.pipeline.hh_fetcher", mock_fetcher),
-            patch("app.core.pipeline.vector_store", mock_store),
-            patch("app.core.pipeline.llm_scorer", mock_scorer),
+            patch("app.core.deps.get_hh_fetcher", return_value=mock_fetcher),
+            patch("app.core.deps.get_vector_store", return_value=mock_store),
+            patch("app.core.deps.get_llm_scorer", return_value=mock_scorer),
             patch("app.core.pipeline.load_profile", return_value=None),
             patch("app.core.pipeline.load_preferences", return_value=None),
             patch("app.core.pipeline.load_search_params", return_value=None),
@@ -200,25 +200,27 @@ class TestRunAnalysisPipeline:
         mock_fetcher.fetch_vacancies.return_value = []
 
         mock_store = MagicMock()
-        mock_store._get_existing_ids.return_value = set()
-        mock_store.add_vacancies.return_value = 0
-        mock_store.search_by_resume.return_value = []
+        mock_store._aget_existing_ids = AsyncMock(return_value=set())
+        mock_store.aadd_vacancies = AsyncMock(return_value=0)
+        mock_store.asearch_by_resume = AsyncMock(return_value=[])
 
         mock_scorer = MagicMock()
         mock_scorer.generate_daily_summary.return_value = "Empty"
 
+        mock_hash = MagicMock()
+        mock_hash.return_value.hexdigest.return_value = "same_hash"
+
         with (
-            patch("app.core.pipeline.hh_fetcher", mock_fetcher),
-            patch("app.core.pipeline.vector_store", mock_store),
-            patch("app.core.pipeline.llm_scorer", mock_scorer),
+            patch("app.core.deps.get_hh_fetcher", return_value=mock_fetcher),
+            patch("app.core.deps.get_vector_store", return_value=mock_store),
+            patch("app.core.deps.get_llm_scorer", return_value=mock_scorer),
             patch("app.core.pipeline.load_profile", return_value=None),
             patch("app.core.pipeline.load_preferences", return_value=None),
             patch("app.core.pipeline.load_search_params", return_value="same_hash"),
             patch("app.core.pipeline.save_search_params"),
             patch("app.core.pipeline.save_last_report_vacancies"),
-            patch("app.core.pipeline.sha256") as mock_hash,
+            patch("app.core.pipeline.sha256", mock_hash),
         ):
-            mock_hash.return_value.hexdigest.return_value = "same_hash"
             await run_analysis_pipeline(profile=profile, prefs=prefs)
 
         call_args = mock_fetcher.fetch_vacancies.call_args

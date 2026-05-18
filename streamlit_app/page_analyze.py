@@ -48,7 +48,7 @@ def render():
     with col1:
         top_n = st.slider("Топ N вакансий в результате", 5, 20, 10)
     with col2:
-        st.info("💡 Анализ занимает 2–5 минут")
+        st.info("💡 Анализ занимает 1–2 минуты")
 
     st.markdown(
         "**Пайплайн:** `hh.ru API` → `ChromaDB` → `Semantic Search` → `GigaChat LLM` → `Результаты`"
@@ -58,7 +58,7 @@ def render():
     is_running = _check_status().get("running", False)
 
     if is_running:
-        st.info("⏳ Идёт анализ... Обычно 2-5 минут. Страница обновляется автоматически.")
+        st.info("⏳ Идёт анализ... Обычно 1-2 минуты. Страница обновляется автоматически.")
         _poll_completion()
     else:
         col_a, col_b, _ = st.columns([1, 1, 2])

@@ -3,6 +3,7 @@
 Токен обновляется автоматически за 60 секунд до истечения.
 """
 
+import os
 import threading
 import time
 import uuid
@@ -15,20 +16,51 @@ from app.core.config import settings
 
 warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 
+# Set to "1" in production to require SSL cert.
+_SSL_REQUIRED = os.getenv("GIGACHAT_SSL_REQUIRED", "").lower() in ("1", "true", "yes")
+
+
+def _setup_ssl() -> None:
+    """Configure SSL: set SSL_CERT_FILE so all HTTP libs pick up the CA cert."""
+    cert_path = settings.gigachat_ca_cert_path
+    if cert_path and os.path.isfile(cert_path):
+        os.environ["SSL_CERT_FILE"] = cert_path
+        os.environ["REQUESTS_CA_BUNDLE"] = cert_path
+        logger.info("SSL CA cert configured: {}", cert_path)
+    elif _SSL_REQUIRED:
+        raise RuntimeError(
+            "GIGACHAT_CA_CERT_PATH is not set or file not found, but SSL is required. "
+            "Set GIGACHAT_CA_CERT_PATH or unset GIGACHAT_SSL_REQUIRED for dev."
+        )
+    else:
+        logger.warning(
+            "GIGACHAT_CA_CERT_PATH is not set — SSL verification is DISABLED. "
+            "Set this to your Sberbank CA cert path in production."
+        )
+
 
 def _get_ssl_verify() -> str | bool:
-    """Return SSL cert path for GigaChat requests.
-
-    Logs a warning if no cert is configured — this disables SSL verification.
-    """
+    """Return value for requests verify= parameter (supports cert path)."""
     cert_path = settings.gigachat_ca_cert_path
-    if cert_path:
+    if cert_path and os.path.isfile(cert_path):
         return cert_path
-    logger.warning(
-        "GIGACHAT_CA_CERT_PATH is not set — SSL verification is DISABLED. "
-        "Set this to your Sberbank CA cert path in production."
-    )
     return False
+
+
+def get_verify_ssl_bool() -> bool:
+    """Return bool for GigaChat SDK verify_ssl_certs parameter."""
+    cert_path = settings.gigachat_ca_cert_path
+    if cert_path and os.path.isfile(cert_path):
+        return True
+    if _SSL_REQUIRED:
+        raise RuntimeError(
+            "GIGACHAT_CA_CERT_PATH is not set or file not found, but SSL is required."
+        )
+    return False
+
+
+# Configure SSL on module import.
+_setup_ssl()
 
 
 class GigaChatTokenProvider:

@@ -39,8 +39,14 @@ def render():
             if r.status_code == 200:
                 profile = r.json()
                 st.session_state["profile"] = profile
-        except Exception:
-            pass
+            elif r.status_code != 404:
+                st.warning(f"Ошибка при загрузке профиля: {r.status_code}")
+        except httpx.ConnectError:
+            st.warning("API недоступен — не удалось загрузить профиль")
+        except httpx.TimeoutException:
+            st.warning("API не ответил — попробуйте позже")
+        except Exception as e:
+            st.warning(f"Ошибка: {e}")
 
     if profile:
         col1, col2 = st.columns([1, 1])

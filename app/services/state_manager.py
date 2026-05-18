@@ -1,141 +1,131 @@
 """
-Простое хранение состояния пользователя в JSON-файле.
-Для MVP это достаточно — в production заменить на БД.
+Хранение состояния пользователя в отдельных JSON-файлах с filelock.
+Каждый тип данных — отдельный файл, чтобы не переписывать всё ради одного поля.
 """
 
-from collections.abc import Callable
-import fcntl
 import json
 from pathlib import Path
 
+from filelock import FileLock
 from loguru import logger
 
 from app.core.config import settings
 from app.models.schemas import ResumeProfile, UserPreferences
 
-_DEFAULT_PATH = Path(settings.resumes_path) / "user_state.json"
+_DATA_DIR = Path(settings.resumes_path)
+
+
+def _ensure_dir(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _read_json(path: Path) -> dict:
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning("State file corrupt {}: {}", path, e)
+    return {}
+
+
+def _write_json(path: Path, data: dict) -> None:
+    _ensure_dir(path)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+class _StateFile:
+    """Thread-safe access to a single JSON file using filelock."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self._lock_path = path.with_suffix(".lock")
+
+    @property
+    def lock(self) -> FileLock:
+        return FileLock(str(self._lock_path))
+
+    def read(self) -> dict:
+        with self.lock:
+            return _read_json(self.path)
+
+    def write(self, data: dict) -> None:
+        with self.lock:
+            _write_json(self.path, data)
+
+    def update(self, fn) -> None:
+        with self.lock:
+            data = _read_json(self.path)
+            fn(data)
+            _write_json(self.path, data)
 
 
 class StateManager:
-    """File-based state storage with locking. Path is injectable for testing."""
+    """File-based state storage with separate files per data type."""
 
-    def __init__(self, state_path: Path | None = None):
-        self.state_path = state_path or _DEFAULT_PATH
-        self._lock_path = self.state_path.with_suffix(".lock")
+    def __init__(self, state_dir: Path | None = None):
+        d = state_dir or _DATA_DIR
+        self._prefs = _StateFile(d / "preferences.json")
+        self._profile = _StateFile(d / "profile.json")
+        self._search = _StateFile(d / "search_params.json")
+        self._report = _StateFile(d / "last_report.json")
 
-    def _acquire_lock(self):
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock_file = open(self._lock_path, "w")  # noqa: SIM115
-        fcntl.flock(self._lock_file, fcntl.LOCK_EX)
-
-    def _release_lock(self):
-        fcntl.flock(self._lock_file, fcntl.LOCK_UN)
-        self._lock_file.close()
-
-    def __enter__(self):
-        self._acquire_lock()
-        return self
-
-    def __exit__(self, *exc):
-        self._release_lock()
-        return False
-
-    def _read_raw(self) -> dict:
-        if self.state_path.exists():
-            try:
-                return json.loads(self.state_path.read_text(encoding="utf-8"))
-            except Exception as e:
-                logger.warning("State file corrupt: {}", e)
-        return {}
-
-    def _write_raw(self, data: dict):
-        self.state_path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-
-    def _atomic_update(self, fn: Callable[[dict], None]):
-        with self:
-            state = self._read_raw()
-            fn(state)
-            self._write_raw(state)
-
-    def save_preferences(self, prefs: UserPreferences):
-        def _update(state: dict):
-            state["preferences"] = prefs.model_dump()
-
-        self._atomic_update(_update)
+    def save_preferences(self, prefs: UserPreferences) -> None:
+        self._prefs.write(prefs.model_dump())
         logger.info("Preferences saved")
 
     def load_preferences(self) -> UserPreferences | None:
-        with self:
-            state = self._read_raw()
-        if "preferences" in state:
+        data = self._prefs.read()
+        if data:
             try:
-                return UserPreferences(**state["preferences"])
+                return UserPreferences(**data)
             except Exception as e:
                 logger.warning("Could not load preferences: {}", e)
         return None
 
-    def save_profile(self, profile: ResumeProfile):
-        def _update(state: dict):
-            state["profile"] = profile.model_dump()
-
-        self._atomic_update(_update)
+    def save_profile(self, profile: ResumeProfile) -> None:
+        self._profile.write(profile.model_dump())
         logger.info("Resume profile saved")
 
     def load_profile(self) -> ResumeProfile | None:
-        with self:
-            state = self._read_raw()
-        if "profile" in state:
+        data = self._profile.read()
+        if data:
             try:
-                return ResumeProfile(**state["profile"])
+                return ResumeProfile(**data)
             except Exception as e:
                 logger.warning("Could not load profile: {}", e)
         return None
 
-    def delete_profile(self):
-        def _update(state: dict):
-            state.pop("profile", None)
-
-        self._atomic_update(_update)
+    def delete_profile(self) -> None:
+        with self._profile.lock:
+            if self._profile.path.exists():
+                self._profile.path.unlink()
         logger.info("Resume profile deleted")
 
-    def save_search_params(self, params_hash: str):
-        def _update(state: dict):
-            state["search_params_hash"] = params_hash
-
-        self._atomic_update(_update)
+    def save_search_params(self, params_hash: str) -> None:
+        self._search.write({"hash": params_hash})
 
     def load_search_params(self) -> str | None:
-        with self:
-            state = self._read_raw()
-        return state.get("search_params_hash")
+        return self._search.read().get("hash")
 
-    def save_last_report_vacancies(self, vacancies_data: list[dict]):
-        def _update(state: dict):
-            state["last_report"] = vacancies_data
-            state["last_report_vacancies"] = {
-                v["vacancy"]["id"]: v["vacancy"] for v in vacancies_data if "vacancy" in v
-            }
-
-        self._atomic_update(_update)
+    def save_last_report_vacancies(self, vacancies_data: list[dict]) -> None:
+        self._report.write({"vacancies": vacancies_data})
 
     def load_last_report(self) -> list[dict]:
-        with self:
-            state = self._read_raw()
-        return state.get("last_report", [])
+        return self._report.read().get("vacancies", [])
 
 
-# Default singleton using settings path
-state = StateManager()
+# Module-level convenience functions backed by lazy singleton
+def _get_state() -> StateManager:
+    from app.core.deps import get_state_manager
+    return get_state_manager()
 
-# Module-level convenience functions backed by the singleton
-save_preferences = state.save_preferences
-load_preferences = state.load_preferences
-save_profile = state.save_profile
-load_profile = state.load_profile
-delete_profile = state.delete_profile
-save_search_params = state.save_search_params
-load_search_params = state.load_search_params
-save_last_report_vacancies = state.save_last_report_vacancies
-load_last_report = state.load_last_report
+
+save_preferences = lambda *a, **kw: _get_state().save_preferences(*a, **kw)
+load_preferences = lambda *a, **kw: _get_state().load_preferences(*a, **kw)
+save_profile = lambda *a, **kw: _get_state().save_profile(*a, **kw)
+load_profile = lambda *a, **kw: _get_state().load_profile(*a, **kw)
+delete_profile = lambda *a, **kw: _get_state().delete_profile(*a, **kw)
+save_search_params = lambda *a, **kw: _get_state().save_search_params(*a, **kw)
+load_search_params = lambda *a, **kw: _get_state().load_search_params(*a, **kw)
+save_last_report_vacancies = lambda *a, **kw: _get_state().save_last_report_vacancies(*a, **kw)
+load_last_report = lambda *a, **kw: _get_state().load_last_report(*a, **kw)

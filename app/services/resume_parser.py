@@ -2,17 +2,20 @@
 Сервис парсинга резюме из PDF/DOCX и извлечения структурированного профиля через GigaChat.
 """
 
+import asyncio
 from datetime import date
 import json
 from pathlib import Path
 import re
-import time
 
 from langchain_core.prompts import PromptTemplate
 from loguru import logger
 
 from app.core.llm import GigaChatLLMFactory
 from app.models.schemas import ResumeProfile
+
+# Max chars sent to LLM (context window limit).
+RESUME_TEXT_MAX = 8000
 
 EXTRACT_PROMPT = PromptTemplate.from_template("""
 Ты — HR-аналитик. Проанализируй резюме и верни JSON со следующими полями:
@@ -65,15 +68,14 @@ class ResumeParser:
     def llm(self):
         return self._factory.get()
 
-    def parse(self, file_path: Path) -> ResumeProfile:
+    async def parse(self, file_path: Path) -> ResumeProfile:
         logger.info("Parsing resume: {}", file_path.name)
-        raw_text = extract_text_from_file(file_path)
+        raw_text = await asyncio.to_thread(extract_text_from_file, file_path)
 
         if not raw_text.strip():
             raise ValueError("Не удалось извлечь текст из файла резюме")
 
-        # Ограничиваем длину для API
-        truncated = raw_text[:8000]
+        truncated = raw_text[:RESUME_TEXT_MAX]
 
         prompt = EXTRACT_PROMPT.format(
             resume_text=truncated,
@@ -83,10 +85,9 @@ class ResumeParser:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                response = self.llm.invoke(prompt)
+                response = await asyncio.to_thread(self.llm.invoke, prompt)
                 content = response.content if hasattr(response, "content") else str(response)
 
-                # Вытаскиваем JSON из ответа
                 match = re.search(r"\{.*\}", content, re.DOTALL)
                 if not match:
                     raise ValueError("LLM не вернул JSON")
@@ -112,7 +113,7 @@ class ResumeParser:
                     logger.warning(
                         "Rate limited, retrying in {}s (attempt {}/{})", wait, attempt + 1, max_retries
                     )
-                    time.sleep(wait)
+                    await asyncio.sleep(wait)
                     continue
                 logger.error("LLM parsing failed: {}, using raw text fallback", e)
                 return ResumeProfile(
@@ -120,5 +121,3 @@ class ResumeParser:
                     summary=raw_text[:2000],
                 )
 
-
-resume_parser = ResumeParser()

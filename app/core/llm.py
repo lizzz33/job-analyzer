@@ -5,7 +5,7 @@ Shared utility for creating GigaChat LLM instances with token rotation.
 from langchain_gigachat import GigaChat
 
 from app.core.config import settings
-from app.core.gigachat_auth import _get_ssl_verify, token_provider
+from app.core.gigachat_auth import get_verify_ssl_bool, token_provider
 
 
 class GigaChatLLMFactory:
@@ -23,7 +23,7 @@ class GigaChatLLMFactory:
 
         kwargs = {
             "access_token": token,
-            "verify_ssl_certs": _get_ssl_verify(),
+            "verify_ssl_certs": get_verify_ssl_bool(),
             "model": settings.gigachat_model,
             **self._default_kwargs,
             **override_kwargs,

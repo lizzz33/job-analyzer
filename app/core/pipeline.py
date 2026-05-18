@@ -9,9 +9,9 @@ import json
 
 from loguru import logger
 
-from app.models.schemas import DailyReport, ResumeProfile, UserPreferences, Vacancy
-from app.services.hh_fetcher import hh_fetcher
-from app.services.scorer import llm_scorer
+from app.models.schemas import DailyReport, ResumeProfile, ScoredVacancy, UserPreferences, Vacancy
+from app.services.hh_fetcher import QUERY_DELAY
+from app.services.scorer import COSINE_DIST_BEST, COSINE_DIST_WORST
 from app.services.state_manager import (
     load_preferences,
     load_profile,
@@ -19,7 +19,9 @@ from app.services.state_manager import (
     save_last_report_vacancies,
     save_search_params,
 )
-from app.services.vector_store import vector_store
+
+# Multiply top_n by this to get the number of candidates from vector search.
+SEARCH_CANDIDATES_MULTIPLIER = 3
 
 
 def _build_search_queries(profile: ResumeProfile, prefs: UserPreferences) -> list[str]:
@@ -45,6 +47,29 @@ def _build_search_queries(profile: ResumeProfile, prefs: UserPreferences) -> lis
     return unique
 
 
+def _semantic_fallback(
+    docs_with_scores: list[tuple],
+    vacancies_map: dict[str, Vacancy],
+    top_n: int,
+) -> list[ScoredVacancy]:
+    """Fallback ranking using only semantic distance when LLM is unavailable."""
+    results: list[ScoredVacancy] = []
+    for doc, raw_distance in docs_with_scores:
+        vid = doc.metadata.get("id", "")
+        vacancy = vacancies_map.get(vid)
+        if not vacancy:
+            continue
+        norm = max(0.0, min(1.0, (COSINE_DIST_WORST - raw_distance) / (COSINE_DIST_WORST - COSINE_DIST_BEST)))
+        results.append(ScoredVacancy(
+            vacancy=vacancy,
+            score=round(norm, 3),
+            match_reason="Оценка по семантическому сходству (LLM недоступен)",
+            semantic_score=round(norm, 3),
+        ))
+    results.sort(key=lambda x: x.score, reverse=True)
+    return results[:top_n]
+
+
 async def run_analysis_pipeline(
     profile: ResumeProfile | None = None,
     prefs: UserPreferences | None = None,
@@ -63,6 +88,12 @@ async def run_analysis_pipeline(
     queries = _build_search_queries(profile, prefs)
     logger.info("Search queries: {}", queries)
 
+    from app.core.deps import get_hh_fetcher, get_llm_scorer, get_vector_store
+
+    hh_fetcher = get_hh_fetcher()
+    vector_store = get_vector_store()
+    llm_scorer = get_llm_scorer()
+
     params_hash = sha256(json.dumps({
         "queries": sorted(queries),
         "city": prefs.city,
@@ -79,24 +110,25 @@ async def run_analysis_pipeline(
         logger.info("Search params changed — full fetch")
         save_search_params(params_hash)
 
-    known_ids = await asyncio.to_thread(vector_store._get_existing_ids) if incremental else None
+    known_ids = await vector_store._aget_existing_ids() if incremental else None
 
-    all_vacancies: list[Vacancy] = []
     vacancies_map: dict[str, Vacancy] = {}
 
-    for query in queries:
+    for i, query in enumerate(queries):
         vacancies = await hh_fetcher.fetch_vacancies(query, prefs, known_ids=known_ids)
         for v in vacancies:
-            if v.id not in vacancies_map:
-                vacancies_map[v.id] = v
-                all_vacancies.append(v)
+            vacancies_map.setdefault(v.id, v)
+        if i < len(queries) - 1:
+            await asyncio.sleep(QUERY_DELAY)
 
-    logger.info("Total unique vacancies fetched: {}", len(all_vacancies))
+    logger.info("Total unique vacancies fetched: {}", len(vacancies_map))
 
-    added = await asyncio.to_thread(vector_store.add_vacancies, all_vacancies)
+    added = await vector_store.aadd_vacancies(list(vacancies_map.values()))
     logger.info("Added {} new vacancies to vector store", added)
 
-    docs_with_scores = await asyncio.to_thread(vector_store.search_by_resume, profile, k=top_n * 3)
+    docs_with_scores = await vector_store.asearch_by_resume(
+        profile, k=top_n * SEARCH_CANDIDATES_MULTIPLIER
+    )
 
     if not docs_with_scores:
         logger.warning("No results from vector search")
@@ -132,12 +164,20 @@ async def run_analysis_pipeline(
         top_n=top_n,
     )
 
-    summary = await asyncio.to_thread(llm_scorer.generate_daily_summary, scored, profile)
+    if not scored and docs_with_scores:
+        logger.warning("LLM scoring returned nothing — falling back to semantic scores")
+        scored = _semantic_fallback(docs_with_scores, vacancies_map, top_n)
+
+    try:
+        summary = await asyncio.to_thread(llm_scorer.generate_daily_summary, scored, profile)
+    except Exception as e:
+        logger.error("Summary generation failed: {}", e)
+        summary = f"Найдено {len(scored)} подходящих вакансий (LLM summary недоступен)."
     save_last_report_vacancies([sv.model_dump(mode="json") for sv in scored])
 
     report = DailyReport(
         generated_at=datetime.now(UTC),
-        total_found=len(all_vacancies),
+        total_found=len(vacancies_map),
         top_vacancies=scored,
         summary_text=summary,
     )

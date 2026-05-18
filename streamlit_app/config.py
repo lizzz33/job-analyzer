@@ -1,4 +1,4 @@
-"""Shared config for Streamlit app — reads from the same settings as the API."""
+"""Shared config for Streamlit app."""
 
 import os
 

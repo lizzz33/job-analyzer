@@ -21,6 +21,10 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
+PAGE_DELAY = 4.0
+QUERY_DELAY = 10.0
+MAX_PAGES = 5
+
 CITY_AREA_MAP = {
     "москва": 1,
     "санкт-петербург": 2,
@@ -43,11 +47,14 @@ CITY_AREA_MAP = {
 SCHEDULE_MAP = {
     WorkFormat.remote: "remote",
     WorkFormat.office: "fullDay",
-    WorkFormat.hybrid: "flexible",
-    WorkFormat.any: None,
+    WorkFormat.hybrid: "hybrid",
+    WorkFormat.any_format: None,
 }
 
 CURRENCY_MAP = {"₽": "RUR", "$": "USD", "€": "EUR", "руб": "RUR"}
+
+# Max chars for vacancy description to avoid excessive memory/context usage.
+VACANCY_DESCRIPTION_MAX = 3000
 
 
 def _parse_salary(text: str) -> tuple[int | None, int | None, str]:
@@ -112,7 +119,11 @@ def _extract_published_at(card: Tag) -> datetime:
             month = months.get(match.group(2))
             year = int(match.group(3)) if match.group(3) else datetime.now(UTC).year
             if month:
-                return datetime(year, month, day, tzinfo=UTC)
+                dt = datetime(year, month, day, tzinfo=UTC)
+                # If computed date is in the future, use previous year
+                if dt > datetime.now(UTC):
+                    dt = datetime(year - 1, month, day, tzinfo=UTC)
+                return dt
     return datetime.now(UTC)
 
 
@@ -204,12 +215,13 @@ class HHFetcher:
         seen_ids: set[str] = set()
         vacancies: list[Vacancy] = []
         incremental = known_ids is not None
+        max_pages = min(MAX_PAGES, max(1, prefs.max_results_per_run // 20))
 
         async with httpx.AsyncClient(
             headers={"User-Agent": USER_AGENT}, follow_redirects=True
         ) as client:
             page = 0
-            while len(vacancies) < prefs.max_results_per_run:
+            while page < max_pages:
                 try:
                     resp = await client.get(
                         HH_SEARCH_URL, params={**base_params, "page": page}, timeout=15.0
@@ -220,10 +232,21 @@ class HHFetcher:
                     soup = BeautifulSoup(resp.text, "lxml")
                     cards = soup.select('[data-qa="vacancy-serp__vacancy"]')
                     if not cards:
+                        captcha = soup.select_one("[data-qa='account-login']")
+                        if captcha or "captcha" in resp.text.lower():
+                            logger.warning(
+                                "HH returned captcha/block page for '{}' page {}",
+                                query, page,
+                            )
+                        else:
+                            logger.warning(
+                                "HH returned 0 cards for '{}' page {} (url={})",
+                                query, page, resp.url,
+                            )
                         break
 
-                    hit_known = False
                     page_vacancies = 0
+                    all_known = True
                     for card in cards:
                         v = _parse_vacancy_card(card)
                         if v is None or v.id in seen_ids:
@@ -235,20 +258,20 @@ class HHFetcher:
                         ):
                             continue
                         if incremental and v.id in known_ids:
-                            hit_known = True
                             continue
+                        all_known = False
                         seen_ids.add(v.id)
                         vacancies.append(v)
                         page_vacancies += 1
 
                     logger.info("HH scrape: '{}' page {} → {}", query, page, page_vacancies)
 
-                    if incremental and hit_known:
+                    if incremental and all_known:
                         break
-                    if page_vacancies == 0:
+                    if page_vacancies == 0 and not cards:
                         break
                     page += 1
-                    await asyncio.sleep(1.5)
+                    await asyncio.sleep(PAGE_DELAY)
                 except httpx.HTTPStatusError as e:
                     logger.error("HH scrape error {}", e.response.status_code)
                     break
@@ -269,10 +292,8 @@ class HHFetcher:
                 soup = BeautifulSoup(resp.text, "lxml")
                 desc_el = soup.select_one('[data-qa="vacancy-description"]')
                 if desc_el:
-                    return desc_el.get_text(" ", strip=True)[:3000]
+                    return desc_el.get_text(" ", strip=True)[:VACANCY_DESCRIPTION_MAX]
             except Exception as e:
                 logger.warning("Details fetch failed {}: {}", vacancy_id, e)
         return None
 
-
-hh_fetcher = HHFetcher()

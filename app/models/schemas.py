@@ -8,12 +8,12 @@ class WorkFormat(StrEnum):
     remote = "remote"
     office = "office"
     hybrid = "hybrid"
-    any = "any"
+    any_format = "any"
 
 
 class UserPreferences(BaseModel):
     city: str = Field("Москва", description="Желаемый город работы")
-    work_format: WorkFormat = Field(WorkFormat.any, description="Формат работы")
+    work_format: WorkFormat = Field(WorkFormat.any_format, description="Формат работы")
     salary_min: int | None = Field(None, description="Минимальная зарплата (руб.)")
     include_no_salary: bool = Field(False, description="Включать вакансии без указанной ЗП")
     excluded_companies: list[str] = Field(default_factory=list, description="Стоп-лист компаний")

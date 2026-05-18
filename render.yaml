@@ -1,0 +1,44 @@
+services:
+  - type: web
+    name: job-analyzer-api
+    runtime: python
+    repo: https://github.com/lizzz33/job-analyzer
+    branch: main
+    plan: free
+    envVars:
+      # Secrets — set via Render Dashboard (sync: false = encrypted, not in repo)
+      - key: GIGACHAT_API_KEY
+        sync: false
+      - key: API_KEY
+        sync: false
+      # Config
+      - key: GIGACHAT_SSL_REQUIRED
+        value: "1"
+      - key: GIGACHAT_SCOPE
+        value: GIGACHAT_API_PERS
+      - key: CHROMA_DB_PATH
+        value: /data/chromadb
+      - key: RESUMES_PATH
+        value: /data/resumes
+      - key: SCHEDULER_ENABLED
+        value: "true"
+      - key: CORS_ORIGINS
+        value: https://job-analyzer-ui.onrender.com
+    buildCommand: pip install .
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    disk:
+      name: chroma-data
+      mountPath: /data
+      sizeGB: 1
+
+  - type: web
+    name: job-analyzer-ui
+    runtime: python
+    repo: https://github.com/lizzz33/job-analyzer
+    branch: main
+    plan: free
+    envVars:
+      - key: API_BASE_URL
+        value: https://job-analyzer-api.onrender.com
+    buildCommand: pip install -r requirements-streamlit.txt
+    startCommand: streamlit run streamlit_app/main.py --server.port $PORT --server.address 0.0.0.0 --server.headless true

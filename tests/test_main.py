@@ -1,7 +1,8 @@
 """Tests for FastAPI endpoints in app.main."""
 
+import asyncio
 import io
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -47,13 +48,16 @@ class TestResumeEndpoints:
 
     def test_get_profile_not_found(self, tmp_path, monkeypatch):
         client, mod = _get_client(tmp_path, monkeypatch)
-        with patch.object(mod, "load_profile", return_value=None):
+        mock_state = MagicMock()
+        mock_state.load_profile.return_value = None
+        with patch.object(mod, "get_state_manager", return_value=mock_state):
             resp = client.get("/resume/profile")
         assert resp.status_code == 404
 
     def test_delete_profile(self, tmp_path, monkeypatch):
         client, mod = _get_client(tmp_path, monkeypatch)
-        with patch.object(mod, "delete_profile"), patch.object(mod, "load_profile", return_value=None):
+        mock_state = MagicMock()
+        with patch.object(mod, "get_state_manager", return_value=mock_state):
             resp = client.delete("/resume/profile")
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
@@ -64,10 +68,13 @@ class TestResumeEndpoints:
         from app.models.schemas import ResumeProfile
 
         mock_profile = ResumeProfile(raw_text="test", name="Иван")
+        mock_parser = MagicMock()
+        mock_parser.parse = AsyncMock(return_value=mock_profile)
+        mock_state = MagicMock()
 
         with (
-            patch.object(mod.resume_parser, "parse", return_value=mock_profile),
-            patch.object(mod, "save_profile"),
+            patch.object(mod, "get_resume_parser", return_value=mock_parser),
+            patch.object(mod, "get_state_manager", return_value=mock_state),
         ):
             fake_file = io.BytesIO(b"resume content text")
             resp = client.post(
@@ -81,7 +88,14 @@ class TestResumeEndpoints:
     def test_upload_parse_error(self, tmp_path, monkeypatch):
         client, mod = _get_client(tmp_path, monkeypatch)
 
-        with patch.object(mod.resume_parser, "parse", side_effect=Exception("Parse failed")):
+        mock_parser = MagicMock()
+        mock_parser.parse = AsyncMock(side_effect=Exception("Parse failed"))
+        mock_state = MagicMock()
+
+        with (
+            patch.object(mod, "get_resume_parser", return_value=mock_parser),
+            patch.object(mod, "get_state_manager", return_value=mock_state),
+        ):
             fake_file = io.BytesIO(b"bad content")
             resp = client.post(
                 "/resume/upload",
@@ -107,23 +121,28 @@ class TestPreferencesEndpoints:
             "max_results_per_run": 50,
         }
 
-        with patch.object(mod, "save_preferences"):
-            resp = client.post("/preferences", json=prefs_data)
-        assert resp.status_code == 200
-
         from app.models.schemas import UserPreferences
 
-        with patch.object(mod, "load_preferences", return_value=UserPreferences(city="Казань", salary_min=150000)):
-            resp = client.get("/preferences")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["city"] == "Казань"
-        assert data["salary_min"] == 150000
+        mock_state = MagicMock()
+        mock_state.load_preferences.return_value = UserPreferences(city="Казань", salary_min=150000)
+
+        with patch.object(mod, "get_state_manager", return_value=mock_state):
+            resp_post = client.post("/preferences", json=prefs_data)
+            assert resp_post.status_code == 200
+
+            resp_get = client.get("/preferences")
+            assert resp_get.status_code == 200
+            data = resp_get.json()
+            assert data["city"] == "Казань"
+            assert data["salary_min"] == 150000
 
     def test_get_default_preferences(self, tmp_path, monkeypatch):
         client, mod = _get_client(tmp_path, monkeypatch)
 
-        with patch.object(mod, "load_preferences", return_value=None):
+        mock_state = MagicMock()
+        mock_state.load_preferences.return_value = None
+
+        with patch.object(mod, "get_state_manager", return_value=mock_state):
             resp = client.get("/preferences")
 
         assert resp.status_code == 200
@@ -135,7 +154,9 @@ class TestAnalysisEndpoints:
     def test_run_analysis_no_profile(self, tmp_path, monkeypatch):
         client, mod = _get_client(tmp_path, monkeypatch)
 
-        with patch.object(mod, "load_profile", return_value=None):
+        mock_state = MagicMock()
+        mock_state.load_profile.return_value = None
+        with patch.object(mod, "get_state_manager", return_value=mock_state):
             resp = client.post("/analysis/run")
 
         assert resp.status_code == 400
@@ -149,7 +170,9 @@ class TestAnalysisEndpoints:
     def test_get_report_empty(self, tmp_path, monkeypatch):
         client, mod = _get_client(tmp_path, monkeypatch)
 
-        with patch.object(mod, "load_last_report", return_value=[]):
+        mock_state = MagicMock()
+        mock_state.load_last_report.return_value = []
+        with patch.object(mod, "get_state_manager", return_value=mock_state):
             resp = client.get("/analysis/report")
 
         assert resp.status_code == 200
@@ -161,10 +184,15 @@ class TestStatsEndpoint:
     def test_stats(self, tmp_path, monkeypatch):
         client, mod = _get_client(tmp_path, monkeypatch)
 
+        mock_vs = MagicMock()
+        mock_vs.get_total_count.return_value = 5
+        mock_state = MagicMock()
+        mock_state.load_profile.return_value = None
+        mock_state.load_preferences.return_value = None
+
         with (
-            patch.object(mod.vector_store, "get_total_count", return_value=5),
-            patch.object(mod, "load_profile", return_value=None),
-            patch.object(mod, "load_preferences", return_value=None),
+            patch.object(mod, "get_vector_store", return_value=mock_vs),
+            patch.object(mod, "get_state_manager", return_value=mock_state),
         ):
             resp = client.get("/stats")
 
@@ -178,8 +206,9 @@ class TestClearDataEndpoint:
     def test_clear(self, tmp_path, monkeypatch):
         client, mod = _get_client(tmp_path, monkeypatch)
 
-        with patch.object(mod.vector_store, "clear") as mock_clear:
+        mock_vs = MagicMock()
+        with patch.object(mod, "get_vector_store", return_value=mock_vs):
             resp = client.delete("/data/clear")
 
         assert resp.status_code == 200
-        mock_clear.assert_called_once()
+        mock_vs.clear.assert_called_once()
