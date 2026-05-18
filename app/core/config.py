@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     daily_report_minute: int = Field(0, alias="DAILY_REPORT_MINUTE")
 
     # Paths
-    chroma_db_path: str = Field("./data/chroma_db", alias="CHROMA_DB_PATH")
+    chroma_db_path: str = Field("", alias="CHROMA_DB_PATH")
     resumes_path: str = Field("./data/resumes", alias="RESUMES_PATH")
 
     # API

@@ -83,12 +83,14 @@ class VectorStore:
     @property
     def store(self) -> Chroma:
         if self._store is None:
-            self._store = Chroma(
-                collection_name=self.VACANCY_COLLECTION,
-                embedding_function=self._get_embeddings(),
-                persist_directory=settings.chroma_db_path,
-                collection_metadata={"hnsw:space": "cosine"},
-            )
+            kwargs: dict = {
+                "collection_name": self.VACANCY_COLLECTION,
+                "embedding_function": self._get_embeddings(),
+                "collection_metadata": {"hnsw:space": "cosine"},
+            }
+            if settings.chroma_db_path:
+                kwargs["persist_directory"] = settings.chroma_db_path
+            self._store = Chroma(**kwargs)
             self._current_token = token_provider.get_token()
         else:
             # Update embeddings client on token rotation without recreating Chroma.

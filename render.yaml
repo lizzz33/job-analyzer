@@ -16,20 +16,12 @@ services:
         value: "1"
       - key: GIGACHAT_SCOPE
         value: GIGACHAT_API_PERS
-      - key: CHROMA_DB_PATH
-        value: /data/chromadb
-      - key: RESUMES_PATH
-        value: /data/resumes
       - key: SCHEDULER_ENABLED
         value: "true"
       - key: CORS_ORIGINS
         value: https://job-analyzer-ui.onrender.com
     buildCommand: pip install .
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-    disk:
-      name: chroma-data
-      mountPath: /data
-      sizeGB: 1
 
   - type: web
     name: job-analyzer-ui
