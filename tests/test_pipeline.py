@@ -8,6 +8,58 @@ import pytest
 from app.models.schemas import DailyReport, ResumeProfile, UserPreferences, Vacancy
 
 
+class TestFlattenSkills:
+    def test_splits_comma_separated(self):
+        from app.core.pipeline import _flatten_skills
+
+        result = _flatten_skills(["FastAPI, Apache Spark, Kafka"])
+        assert result == ["FastAPI", "Apache Spark", "Kafka"]
+
+    def test_splits_semicolon_separated(self):
+        from app.core.pipeline import _flatten_skills
+
+        result = _flatten_skills(["Python; Django; Flask"])
+        assert result == ["Python", "Django", "Flask"]
+
+    def test_splits_colon_separated(self):
+        from app.core.pipeline import _flatten_skills
+
+        result = _flatten_skills(["Языки: Python Go"])
+        assert result == ["Языки", "Python Go"]
+
+    def test_skips_long_strings(self):
+        from app.core.pipeline import _flatten_skills
+
+        result = _flatten_skills(["a" * 50])
+        assert result == []
+
+    def test_skips_category_descriptions(self):
+        from app.core.pipeline import _flatten_skills
+
+        result = _flatten_skills(["опыт работы с большими данными"])
+        assert result == []
+
+    def test_mixed_input(self):
+        from app.core.pipeline import _flatten_skills
+
+        result = _flatten_skills(["Python, Docker", "SQL", "Framework: FastAPI"])
+        assert "Python" in result
+        assert "Docker" in result
+        assert "SQL" in result
+        assert "FastAPI" in result
+
+    def test_empty_input(self):
+        from app.core.pipeline import _flatten_skills
+
+        assert _flatten_skills([]) == []
+
+    def test_strips_whitespace(self):
+        from app.core.pipeline import _flatten_skills
+
+        result = _flatten_skills(["  Python  ,  Docker  "])
+        assert result == ["Python", "Docker"]
+
+
 class TestBuildSearchQueries:
     def test_uses_position(self):
         from app.core.pipeline import _build_search_queries

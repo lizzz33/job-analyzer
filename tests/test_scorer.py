@@ -185,6 +185,43 @@ class TestScoreVacancies:
         assert results[0].match_reason == "Оценка по семантическому сходству"
 
 
+class TestDistanceToSemanticScore:
+    def test_floor_returns_one(self):
+        from app.services.scorer import _distance_to_semantic_score
+
+        assert _distance_to_semantic_score(0.1) == 1.0
+        assert _distance_to_semantic_score(0.25) == 1.0
+
+    def test_ceil_returns_zero(self):
+        from app.services.scorer import _distance_to_semantic_score
+
+        assert _distance_to_semantic_score(0.6) == 0.0
+        assert _distance_to_semantic_score(1.0) == 0.0
+
+    def test_midrange_between_zero_and_one(self):
+        from app.services.scorer import _distance_to_semantic_score
+
+        score = _distance_to_semantic_score(0.35)
+        assert 0.0 < score < 1.0
+
+    def test_monotonically_decreasing(self):
+        from app.services.scorer import _distance_to_semantic_score
+
+        s1 = _distance_to_semantic_score(0.28)
+        s2 = _distance_to_semantic_score(0.35)
+        s3 = _distance_to_semantic_score(0.42)
+        assert s1 > s2 > s3
+
+    def test_symmetric_around_calibration_points(self):
+        from app.services.scorer import _distance_to_semantic_score
+
+        # p5=0.2782 → ~0.95, p95=0.4556 → ~0.05
+        s_p5 = _distance_to_semantic_score(0.2782)
+        s_p95 = _distance_to_semantic_score(0.4556)
+        assert s_p5 > 0.9
+        assert s_p95 < 0.1
+
+
 class TestNormalizeSemanticScores:
     def test_p5_distance_gives_high_score(self):
         from app.services.scorer import _normalize_semantic_scores

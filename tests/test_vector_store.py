@@ -219,3 +219,49 @@ class TestVectorStoreIntegration:
         mock_collection.get.side_effect = Exception("fail")
 
         assert vs._get_existing_ids() == set()
+
+
+class TestSearchBySkills:
+    def _make_store(self):
+        from app.services.vector_store import VectorStore
+
+        vs = VectorStore()
+        mock_collection = MagicMock()
+        mock_store = MagicMock()
+        mock_store._collection = mock_collection
+        type(vs).store = PropertyMock(return_value=mock_store)
+        return vs, mock_store, mock_collection
+
+    def test_search_by_skills_returns_results(self):
+        from langchain_core.documents import Document
+
+        vs, mock_store, mock_collection = self._make_store()
+
+        doc1 = Document(page_content="Python Dev at Co", metadata={"id": "1", "title": "Python Dev"})
+        doc2 = Document(page_content="ML Eng at Yandex", metadata={"id": "2", "title": "ML Eng"})
+        mock_store.similarity_search_with_score.return_value = [(doc1, 0.3), (doc2, 0.5)]
+
+        results = vs.search_by_skills(["Python", "Docker"])
+
+        assert len(results) == 2
+        assert results[0][0].metadata["id"] == "1"
+
+    def test_search_by_skills_empty_list(self):
+        vs, _, _ = self._make_store()
+
+        results = vs.search_by_skills([])
+        assert results == []
+
+    def test_search_by_skills_limits_to_10(self):
+        from app.services.vector_store import SKILLS_IN_QUERY
+
+        vs, mock_store, _ = self._make_store()
+        mock_store.similarity_search_with_score.return_value = []
+
+        many_skills = [f"skill_{i}" for i in range(20)]
+        vs.search_by_skills(many_skills)
+
+        call_args = mock_store.similarity_search_with_score.call_args
+        query = call_args[0][0]
+        assert "skill_9" in query
+        assert "skill_10" not in query

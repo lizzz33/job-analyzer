@@ -51,3 +51,15 @@ class TestFeedbackStore:
     def test_company_none_excluded(self, store):
         store.add_feedback(VacancyFeedback(vacancy_id="v1", feedback_type=FeedbackType.like, company=""))
         assert store.get_liked_companies() == set()
+
+    def test_get_disliked_vacancy_ids(self, store):
+        store.add_feedback(_fb("v1", FeedbackType.dislike, "BadCorp"))
+        store.add_feedback(_fb("v2", FeedbackType.like, "GoodCorp"))
+        store.add_feedback(_fb("v3", FeedbackType.dislike, "AnotherCorp"))
+
+        ids = store.get_disliked_vacancy_ids()
+        assert ids == {"v1", "v3"}
+
+    def test_get_disliked_vacancy_ids_empty(self, store):
+        store.add_feedback(_fb("v1", FeedbackType.like, "GoodCorp"))
+        assert store.get_disliked_vacancy_ids() == set()

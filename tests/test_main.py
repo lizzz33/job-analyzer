@@ -211,3 +211,42 @@ class TestClearDataEndpoint:
 
         assert resp.status_code == 200
         mock_vs.clear.assert_called_once()
+
+
+class TestSearchBySkillsEndpoint:
+    def test_search_by_skills(self, tmp_path, monkeypatch):
+        from langchain_core.documents import Document
+
+        client, mod = _get_client(tmp_path, monkeypatch)
+
+        doc = Document(page_content="Python Dev", metadata={
+            "id": "1", "title": "Python Dev", "company": "Co",
+            "city": "Msk", "url": "https://hh.ru/1", "published_at": "2025-01-01",
+            "salary_from": None, "salary_to": None,
+        })
+        mock_vs = MagicMock()
+        mock_vs.search_by_skills.return_value = [(doc, 0.35)]
+
+        with patch.object(mod, "get_vector_store", return_value=mock_vs):
+            resp = client.get(
+                "/vacancies/search-by-skills",
+                params={"skills": ["Python", "Docker"]},
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["vacancies"]) == 1
+        assert data["vacancies"][0]["id"] == "1"
+        assert data["vacancies"][0]["score"] == 0.35
+
+    def test_search_by_skills_too_many(self, tmp_path, monkeypatch):
+        client, mod = _get_client(tmp_path, monkeypatch)
+
+        mock_vs = MagicMock()
+        with patch.object(mod, "get_vector_store", return_value=mock_vs):
+            resp = client.get(
+                "/vacancies/search-by-skills",
+                params={"skills": [f"skill_{i}" for i in range(25)]},
+            )
+
+        assert resp.status_code == 400
