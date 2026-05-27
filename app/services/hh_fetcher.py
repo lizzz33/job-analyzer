@@ -39,11 +39,10 @@ BROWSER_HEADERS = {
     "Cache-Control": "max-age=0",
 }
 
-PAGE_DELAY = 6.0
-QUERY_DELAY = 15.0
-# One page per query (~20 vacancies); pipeline runs multiple queries so total
-# coverage stays sufficient without excessive scraping.
-MAX_PAGES = 5
+PAGE_DELAY = 3.0
+QUERY_DELAY = 10.0
+MAX_PAGES_FULL = 10
+MAX_PAGES_INCREMENTAL = 1
 
 CITY_AREA_MAP = {
     "москва": 1,
@@ -79,7 +78,8 @@ VACANCY_DESCRIPTION_MAX = 3000
 
 def _parse_salary(text: str) -> tuple[int | None, int | None, str]:
     """Parse salary text like 'от 200 000 ₽', 'до 4 000 $', '100 000 — 200 000 ₽'."""
-    text = text.replace("\xa0", " ").replace(" ", " ").replace("−", "—")
+    text = text.replace("\xa0", " ").replace(" ", " ")
+    text = re.sub(r"[–—−\-]", "—", text)
 
     currency = "RUR"
     for symbol, code in CURRENCY_MAP.items():
@@ -237,7 +237,7 @@ class HHFetcher:
         seen_ids: set[str] = set()
         vacancies: list[Vacancy] = []
         incremental = known_ids is not None
-        max_pages = min(MAX_PAGES, max(1, prefs.max_results_per_run // 20))
+        max_pages = MAX_PAGES_INCREMENTAL if incremental else MAX_PAGES_FULL
 
         async with httpx.AsyncClient(
             headers={**BROWSER_HEADERS, "User-Agent": random.choice(USER_AGENTS)},

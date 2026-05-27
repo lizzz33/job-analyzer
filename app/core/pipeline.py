@@ -6,12 +6,12 @@ import asyncio
 from datetime import UTC, datetime
 from hashlib import sha256
 import json
+import re
 
 from loguru import logger
 
 from app.core.deps import get_feedback_store
 from app.models.schemas import DailyReport, ResumeProfile, ScoredVacancy, UserPreferences, Vacancy
-from app.services.hh_fetcher import QUERY_DELAY
 from app.services.scorer import _normalize_semantic_scores
 from app.services.seniority import (
     SeniorityLevel,
@@ -36,35 +36,47 @@ FEEDBACK_LIKE_BOOST = 0.05
 FEEDBACK_DISLIKE_PENALTY = 0.1
 
 MIN_RELEVANCE_SCORE = 0.4
-DESCRIPTION_FETCH_CONCURRENCY = 2
+DESCRIPTION_FETCH_CONCURRENCY = 4
+SEARCH_CONCURRENCY = 2
+
+
+def _flatten_skills(skills: list[str]) -> list[str]:
+    """Split grouped skill strings into individual short skills.
+
+    "FastAPI, Apache Spark, Kafka" → ["FastAPI", "Apache Spark", "Kafka"]
+    """
+    flat: list[str] = []
+    for s in skills:
+        parts = re.split(r"[,;]\s*|\s*[:：]\s+", s)
+        for p in parts:
+            p = p.strip()
+            # Skip category descriptions (4+ words) and too long strings
+            if p and len(p) <= 30 and len(p.split()) <= 3:
+                flat.append(p)
+    return flat
 
 
 def _build_search_queries(profile: ResumeProfile, prefs: UserPreferences) -> list[str]:
-    """Build short, focused search queries for hh.ru.
-
-    Strategy: role + top skill combinations give the best results on hh.ru.
-    Individual skills as standalone queries are too broad.
-    """
-    # Extract core role (first 2-3 words from position)
+    """Build short, focused search queries for hh.ru."""
     role = " ".join(profile.position.split()[:3]) if profile.position else ""
-    top_skills = profile.skills[:4] if profile.skills else []
+    skills = _flatten_skills(profile.skills)
 
     queries: list[str] = []
 
-    # Query 1: role alone (broadest)
+    # Role alone
     if role:
         queries.append(role)
 
-    # Queries 2-3: role + top skill (targeted)
-    for skill in top_skills[:2]:
-        if role:
+    # Role + skill (best signal for hh.ru)
+    if role:
+        for skill in skills[:6]:
             queries.append(f"{role} {skill}")
 
-    # Combined top skills query (works without a role too)
-    if top_skills:
-        queries.append(" ".join(top_skills[:2]))
+    # Standalone skills (fallback if no role)
+    if not role:
+        queries.extend(skills[:6])
 
-    # Queries 4+: user keywords (intentional, already short)
+    # User keywords
     if prefs.keywords:
         queries.extend(prefs.keywords[:3])
 
@@ -152,12 +164,15 @@ async def run_analysis_pipeline(
 
     vacancies_map: dict[str, Vacancy] = {}
 
-    for i, query in enumerate(queries):
-        vacancies = await hh_fetcher.fetch_vacancies(query, prefs, known_ids=known_ids)
-        for v in vacancies:
-            vacancies_map.setdefault(v.id, v)
-        if i < len(queries) - 1:
-            await asyncio.sleep(QUERY_DELAY)
+    sem = asyncio.Semaphore(SEARCH_CONCURRENCY)
+
+    async def _fetch_query(query: str) -> None:
+        async with sem:
+            vacancies = await hh_fetcher.fetch_vacancies(query, prefs, known_ids=known_ids)
+            for v in vacancies:
+                vacancies_map.setdefault(v.id, v)
+
+    await asyncio.gather(*[_fetch_query(q) for q in queries])
 
     logger.info("Total unique vacancies fetched: {}", len(vacancies_map))
 
@@ -171,7 +186,6 @@ async def run_analysis_pipeline(
                 desc = await hh_fetcher.get_vacancy_details(v.id)
                 if desc:
                     v.description = desc
-                await asyncio.sleep(1.5)
 
         sem = asyncio.Semaphore(DESCRIPTION_FETCH_CONCURRENCY)
         await asyncio.gather(*[_fetch_description(v, sem) for v in new_vacancies])
@@ -190,6 +204,18 @@ async def run_analysis_pipeline(
             for doc, score in docs_with_scores
             if not any(e in doc.metadata.get("company", "").lower() for e in ex_lower)
         ]
+
+    # Hard exclude disliked vacancies
+    fb = get_feedback_store()
+    disliked_ids = fb.get_disliked_vacancy_ids()
+    if disliked_ids:
+        before = len(docs_with_scores)
+        docs_with_scores = [
+            (doc, score)
+            for doc, score in docs_with_scores
+            if doc.metadata.get("id", "") not in disliked_ids
+        ]
+        logger.info("Excluded {} disliked vacancies", before - len(docs_with_scores))
 
     # Seniority pre-filter
     candidate_level = detect_seniority_from_experience(profile.experience_years)
@@ -233,13 +259,14 @@ async def run_analysis_pipeline(
                 ),
             )
 
+    scorer_top_n = top_n * 3
     scored = await asyncio.to_thread(
         llm_scorer.score_vacancies,
         docs_with_scores=docs_with_scores,
         vacancies_map=vacancies_map,
         profile=profile,
         prefs=prefs,
-        top_n=top_n,
+        top_n=scorer_top_n,
     )
 
     if not scored and docs_with_scores:
@@ -251,8 +278,9 @@ async def run_analysis_pipeline(
     if len(scored) < before:
         logger.info("Filtered {} vacancies below {:.0%} threshold", before - len(scored), MIN_RELEVANCE_SCORE)
 
-    # Apply feedback-based score adjustments
-    fb = get_feedback_store()
+    scored = scored[:top_n]
+
+    # Apply feedback-based score adjustments (company level)
     liked = fb.get_liked_companies()
     disliked = fb.get_disliked_companies()
     if liked or disliked:

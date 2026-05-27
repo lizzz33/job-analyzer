@@ -57,3 +57,10 @@ class FeedbackStore:
             for f in self.get_all()
             if f.feedback_type == FeedbackType.dislike and f.company
         }
+
+    def get_disliked_vacancy_ids(self) -> set[str]:
+        return {
+            f.vacancy_id
+            for f in self.get_all()
+            if f.feedback_type == FeedbackType.dislike
+        }

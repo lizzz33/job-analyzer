@@ -136,7 +136,9 @@ class TestVectorStoreIntegration:
 
         count = vs.add_vacancies(vacancies)
         assert count == 1
-        mock_store.add_documents.assert_called_once()
+        mock_collection.add.assert_called_once()
+        call_args = mock_collection.add.call_args
+        assert "3" in call_args.kwargs["ids"] or "3" in call_args.args[0]
 
     def test_add_vacancies_all_duplicates(self):
         vs, mock_store, mock_collection = self._make_store()
@@ -151,24 +153,39 @@ class TestVectorStoreIntegration:
         assert count == 0
 
     def test_search_by_resume_returns_results(self):
-        from langchain_core.documents import Document
+        from unittest.mock import patch
 
-        vs, mock_store, _ = self._make_store()
-        doc = Document(page_content="test", metadata={"id": "1"})
-        mock_store.similarity_search_with_score.return_value = [(doc, 10.0)]
+        vs, mock_store, mock_collection = self._make_store()
 
-        profile = ResumeProfile(raw_text="dev", position="Dev")
-        results = vs.search_by_resume(profile)
+        mock_emb = MagicMock()
+        mock_emb.embed_documents.return_value = [[0.1] * 1024]
+
+        mock_collection.query.return_value = {
+            "ids": [["1"]],
+            "documents": [["test doc"]],
+            "metadatas": [[{"id": "1"}]],
+            "distances": [[0.5]],
+        }
+
+        with patch.object(vs, "_get_embeddings", return_value=mock_emb):
+            profile = ResumeProfile(raw_text="dev", position="Dev")
+            results = vs.search_by_resume(profile)
 
         assert len(results) == 1
         assert results[0][0].metadata["id"] == "1"
 
     def test_search_by_resume_handles_error(self):
-        vs, mock_store, _ = self._make_store()
-        mock_store.similarity_search_with_score.side_effect = Exception("DB error")
+        from unittest.mock import patch
 
-        profile = ResumeProfile(raw_text="dev")
-        results = vs.search_by_resume(profile)
+        vs, mock_store, mock_collection = self._make_store()
+
+        mock_emb = MagicMock()
+        mock_emb.embed_documents.return_value = [[0.1] * 1024]
+        mock_collection.query.side_effect = Exception("DB error")
+
+        with patch.object(vs, "_get_embeddings", return_value=mock_emb):
+            profile = ResumeProfile(raw_text="dev")
+            results = vs.search_by_resume(profile)
 
         assert results == []
 

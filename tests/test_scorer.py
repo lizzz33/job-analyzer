@@ -186,45 +186,55 @@ class TestScoreVacancies:
 
 
 class TestNormalizeSemanticScores:
-    def test_best_gets_1_worst_gets_0(self):
+    def test_p5_distance_gives_high_score(self):
         from app.services.scorer import _normalize_semantic_scores
 
-        scores = _normalize_semantic_scores([0.1, 0.3, 0.5])
-        assert scores[0] == pytest.approx(1.0)
-        assert scores[1] == pytest.approx(0.5)
-        assert scores[2] == pytest.approx(0.0)
+        # p5 = 0.2782 → score ≈ 0.95
+        scores = _normalize_semantic_scores([0.2782])
+        assert scores[0] == pytest.approx(0.95, abs=0.02)
 
-    def test_single_result_returns_0_5(self):
+    def test_p95_distance_gives_low_score(self):
         from app.services.scorer import _normalize_semantic_scores
 
-        scores = _normalize_semantic_scores([0.3])
-        assert scores == [0.5]
+        # p95 = 0.4556 → score ≈ 0.05
+        scores = _normalize_semantic_scores([0.4556])
+        assert scores[0] == pytest.approx(0.05, abs=0.02)
 
-    def test_all_equal_returns_0_5(self):
+    def test_median_distance_gives_mid_score(self):
         from app.services.scorer import _normalize_semantic_scores
 
-        scores = _normalize_semantic_scores([0.25, 0.25, 0.25])
-        assert scores == [0.5, 0.5, 0.5]
+        # median ≈ 0.37 → score ≈ 0.47
+        scores = _normalize_semantic_scores([0.37])
+        assert 0.35 < scores[0] < 0.60
+
+    def test_better_distance_higher_score(self):
+        from app.services.scorer import _normalize_semantic_scores
+
+        scores = _normalize_semantic_scores([0.28, 0.35, 0.42])
+        assert scores[0] > scores[1] > scores[2]
+
+    def test_floor_clamps_to_1(self):
+        from app.services.scorer import _normalize_semantic_scores
+
+        assert _normalize_semantic_scores([0.20])[0] == 1.0
+
+    def test_ceil_clamps_to_0(self):
+        from app.services.scorer import _normalize_semantic_scores
+
+        assert _normalize_semantic_scores([0.60])[0] == 0.0
 
     def test_empty_returns_empty(self):
         from app.services.scorer import _normalize_semantic_scores
 
         assert _normalize_semantic_scores([]) == []
 
-    def test_two_results(self):
+    def test_realistic_batch_range(self):
         from app.services.scorer import _normalize_semantic_scores
 
-        scores = _normalize_semantic_scores([0.2, 0.4])
-        assert scores[0] == pytest.approx(1.0)
-        assert scores[1] == pytest.approx(0.0)
-
-    def test_preserves_order(self):
-        from app.services.scorer import _normalize_semantic_scores
-
-        scores = _normalize_semantic_scores([0.5, 0.1, 0.3])
-        assert scores[0] == pytest.approx(0.0)
-        assert scores[1] == pytest.approx(1.0)
-        assert scores[2] == pytest.approx(0.5)
+        scores = _normalize_semantic_scores([0.34, 0.36, 0.38])
+        # All should be in absolute mid-range (not near 0 or 1)
+        assert all(0.2 < s < 0.8 for s in scores)
+        assert scores[0] > scores[-1]
 
 
 class TestDailySummary:

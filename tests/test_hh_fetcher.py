@@ -70,6 +70,20 @@ class TestParseSalary:
         assert sal_from == 100000
         assert sal_to == 200000
 
+    def test_endash_range(self):
+        from app.services.hh_fetcher import _parse_salary
+
+        sal_from, sal_to, cur = _parse_salary("200 000 – 300 000 ₽")
+        assert sal_from == 200000
+        assert sal_to == 300000
+
+    def test_hyphen_range(self):
+        from app.services.hh_fetcher import _parse_salary
+
+        sal_from, sal_to, cur = _parse_salary("200 000 - 300 000 ₽")
+        assert sal_from == 200000
+        assert sal_to == 300000
+
 
 # ── CITY_AREA_MAP ──────────────────────────────────────────────────────────────
 

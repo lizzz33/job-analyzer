@@ -8,7 +8,16 @@ from pathlib import Path
 import time
 from typing import Any
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from loguru import logger
@@ -222,6 +231,39 @@ def get_report(_auth: None = Depends(_verify_api_key)) -> dict[str, Any]:
     if not data:
         return {"vacancies": [], "message": "Отчёт ещё не сформирован"}
     return {"vacancies": data}
+
+
+# ── Skill search ──────────────────────────────────────────────────────────────
+
+
+MAX_SEARCH_SKILLS = 20
+
+
+@app.get("/vacancies/search-by-skills", summary="Поиск вакансий по навыкам")
+def search_by_skills(
+    skills: list[str] = Query(..., description="Навыки для поиска"),
+    top_n: int = Query(20, ge=1, le=100),
+    _auth: None = Depends(_verify_api_key),
+):
+    if len(skills) > MAX_SEARCH_SKILLS:
+        raise HTTPException(400, detail=f"Too many skills (max {MAX_SEARCH_SKILLS})")
+    vs = get_vector_store()
+    docs_with_scores = vs.search_by_skills(skills, k=top_n)
+
+    results = []
+    for doc, score in docs_with_scores:
+        results.append({
+            "id": doc.metadata.get("id", ""),
+            "title": doc.metadata.get("title", ""),
+            "company": doc.metadata.get("company", ""),
+            "city": doc.metadata.get("city", ""),
+            "salary_from": doc.metadata.get("salary_from"),
+            "salary_to": doc.metadata.get("salary_to"),
+            "url": doc.metadata.get("url", ""),
+            "published_at": doc.metadata.get("published_at", ""),
+            "score": round(score, 3),
+        })
+    return {"vacancies": results}
 
 
 # ── Stats & utils ─────────────────────────────────────────────────────────────

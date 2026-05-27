@@ -6,6 +6,7 @@ GigaChat API однопоточный — вызовы выполняются п
 """
 
 import json
+import math
 import re
 
 from langchain_core.documents import Document
@@ -16,8 +17,14 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from app.core.llm import GigaChatLLMFactory
 from app.models.schemas import ResumeProfile, ScoredVacancy, UserPreferences, Vacancy
 
-# Min-max normalization bounds are derived from the actual search batch,
-# so no hardcoded distance constants are needed.
+# Logistic calibration: semantic_score(d) = 1 / (1 + exp(a + b*d))
+# Parameters fitted from 539 vacancies pairwise distribution:
+#   p5=0.2782 → score 0.95, p95=0.4556 → score 0.05
+# Recalibrate when DB grows significantly (run compute_calibration below).
+_CALIB_A = -12.179421
+_CALIB_B = 33.195479
+_CALIB_FLOOR = 0.25   # d below this → score 1.0
+_CALIB_CEIL = 0.58    # d above this → score 0.0
 
 # Weight for combining semantic and LLM scores.
 SEMANTIC_WEIGHT = 0.4
@@ -32,40 +39,37 @@ VACANCY_TEXT_MAX = 1500
 DAILY_SUMMARY_PROFILE_MAX = 500
 
 SCORE_PROMPT = PromptTemplate.from_template("""
-Ты — строгий рекрутер. Оцени РЕАЛЬНОЕ соответствие кандидата вакансии.
+Оцени соответствие кандидата вакансии. Уровень кандидата — из поля «Позиция», не из лет опыта.
 
 Кандидат:
 {profile}
 
 Пожелания кандидата:
-- Город: {city}
-- Формат работы: {work_formats}
-- Минимальная зарплата: {salary_min}
-- Интересы: {extra_interests}
-- Приоритетные компании: {preferred_companies}
-- Стоп-лист компаний: {excluded_companies}
-- Ключевые слова: {keywords}
+Город: {city}. Формат: {work_formats}. Мин. ЗП: {salary_min}.
+Интересы: {extra_interests}. Приоритетные компании: {preferred_companies}.
+Стоп-лист: {excluded_companies}. Ключевые слова: {keywords}.
 
 Вакансия:
 {vacancy}
 
-ПРАВИЛА ОЦЕНКИ:
-- Главное — совпадение описания вакансии с опытом и навыками кандидата.
-- Оценивай стек технологий, задачи, домен, уровень ответственности.
-- Требования по опыту не совпадают (например, вакансия senior, а кандидат junior) → ниже 0.3
-- Сфера вакансии не связана с опытом кандидата → ниже 0.3
-- Город не совпадает → ниже 0.5. Район или станция метро того же города — это совпадение.
-- Зарплата ниже минимума → ниже 0.5
-- Формат работы — второстепенный фактор, не занижай оценку только из-за формата.
-- Компания в приоритетных → +0.1
-- НЕ пиши «идеально» — это почти никогда не правда.
-- Оценка 0.8+ только если есть реальное совпадение по описанию и навыкам.
-- Если кандидат не подходит — ставь score < 0.4 и пиши причину отказа в reason.
+ЗАПРЕТЫ:
+- НЕ пиши навыки кандидата как требования вакансии. В reason — только технологии из текста вакансии.
+- НЕ пиши «отсутствует», пока не проверишь навыки кандидата. Docker Compose = Docker, K8s = Kubernetes.
+- НЕ пиши «хорошее совпадение» и подобные фразы.
+- НЕ определяй уровень по годам опыта — бери из поля «Позиция».
 
-В reason напиши 1-3 предложения: сначала почему подходит, затем несовпадения на что обратить внимание.
+ОЦЕНКА:
+- За каждый недостающий обязательный навык: −0.3 от максимума.
+- Опыт в годах сильно не совпадает → score ≤ 0.2.
+- Уровень не совпадает → −0.2. Город не совпадает → −0.3.
+- ЗП ниже минимума → −0.3. Формат — второстепенно.
+- Навыки в начале списка требований важнее.
+- Приоритетная компания: +0.1. Совпадение с интересами: +0.05.
 
-Ответ — ТОЛЬКО JSON:
-{{"score": 0.75, "reason": "Хорошее совпадение по ML-стеку: CatBoost, LightGBM, FastAPI — всё из опыта кандидата. Компания из приоритетных. Вакансия без указания ЗП."}}
+reason: 2 предложения. Сначала чего не хватает из требований вакансии, потом что совпадает.
+
+Только JSON:
+{{"score": 0.55, "reason": "Нет опыта с PyTorch и CV — обязательные требования вакансии. Совпадает ML-стек (CatBoost, LightGBM) и опыт с рекомендательными системами."}}
 """)
 
 
@@ -87,28 +91,80 @@ DAILY_SUMMARY_PROMPT = PromptTemplate.from_template("""
 """)
 
 
-def _normalize_semantic_scores(distances: list[float]) -> list[float]:
-    """Min-max normalize raw cosine distances within the batch to [1.0, 0.0].
+def _distance_to_semantic_score(d: float) -> float:
+    """Convert cosine distance to semantic score via logistic calibration.
 
-    Best (lowest) distance → 1.0, worst (highest) → 0.0.
-    Single result or all-equal distances → 0.5 for every item.
+    Uses globally fitted sigmoid based on the pairwise distance distribution
+    of all vacancies in the DB. Absolute scale — independent of batch composition.
     """
-    n = len(distances)
-    if n == 0:
+    if d <= _CALIB_FLOOR:
+        return 1.0
+    if d >= _CALIB_CEIL:
+        return 0.0
+    return 1.0 / (1.0 + math.exp(_CALIB_A + _CALIB_B * d))
+
+
+def _normalize_semantic_scores(distances: list[float]) -> list[float]:
+    """Convert raw cosine distances to absolute semantic scores."""
+    if not distances:
         return []
-    if n == 1:
-        return [0.5]
-    min_d = min(distances)
-    max_d = max(distances)
-    span = max_d - min_d
-    if span < 1e-9:
-        return [0.5] * n
-    return [max(0.0, min(1.0, (max_d - d) / span)) for d in distances]
+    return [_distance_to_semantic_score(d) for d in distances]
+
+
+def compute_calibration_from_db() -> None:
+    """Recalibrate sigmoid parameters from current ChromaDB data.
+
+    Run this after the DB grows significantly to update _CALIB_A, _CALIB_B.
+    Prints the new constants — paste them into the module.
+    """
+    import os
+    import shutil
+    import tempfile
+
+    import chromadb
+    import numpy as np
+
+    from app.core.config import settings
+
+    source_db = settings.chroma_db_path or "data/chroma_db"
+    db_path = os.path.join(tempfile.mkdtemp(), "db")
+    shutil.copytree(source_db, db_path)
+    for root, _, files in os.walk(db_path):
+        for f in files:
+            os.chmod(os.path.join(root, f), 0o644)
+
+    client = chromadb.PersistentClient(path=db_path, settings=chromadb.Settings(anonymized_telemetry=False))
+    col = client.get_collection("vacancies")
+    data = col.get(include=["embeddings"], limit=col.count())
+    embeddings = np.array(data["embeddings"], dtype=np.float32)
+
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    normed = embeddings / norms
+    dist = 1.0 - normed @ normed.T
+    triu = dist[np.triu_indices(len(embeddings), k=1)]
+
+    p5 = float(np.percentile(triu, 5))
+    p95 = float(np.percentile(triu, 95))
+    pmax = float(triu.max())
+
+    r1 = np.log(1 / 0.95 - 1)
+    r2 = np.log(1 / 0.05 - 1)
+    b = float((r2 - r1) / (p95 - p5))
+    a = float(r1 - b * p5)
+
+    shutil.rmtree(os.path.dirname(db_path))
+
+    print(f"Vacancies: {len(embeddings)}, pairs: {len(triu)}")
+    print(f"p5={p5:.4f}, p95={p95:.4f}, max={pmax:.4f}")
+    print(f"_CALIB_A = {a:.6f}")
+    print(f"_CALIB_B = {b:.6f}")
+    print(f"_CALIB_FLOOR = {max(0.0, p5 - 0.03):.2f}")
+    print(f"_CALIB_CEIL  = {min(1.0, pmax + 0.02):.2f}")
 
 
 class LLMScorer:
     def __init__(self):
-        self._factory = GigaChatLLMFactory(temperature=0.1)
+        self._factory = GigaChatLLMFactory(temperature=0.1, max_tokens=2048)
 
     @property
     def llm(self):

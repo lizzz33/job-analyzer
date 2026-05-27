@@ -67,17 +67,15 @@ class TestBuildSearchQueries:
         assert len(queries) > 0
         assert "специалист" in queries or "разработчик" in queries
 
-    def test_limits_skills_to_2(self):
+    def test_limits_skills_to_6(self):
         from app.core.pipeline import _build_search_queries
 
         profile = ResumeProfile(raw_text="text", skills=[f"s{i}" for i in range(10)])
         prefs = UserPreferences()
         queries = _build_search_queries(profile, prefs)
 
-        skills_query = [q for q in queries if "s0" in q][0]
-        assert "s0" in skills_query
-        assert "s1" in skills_query
-        assert "s2" not in skills_query
+        skill_queries = [q for q in queries if any(f"s{i}" in q for i in range(10))]
+        assert len(skill_queries) == 6
 
 
 class TestRunAnalysisPipeline:
@@ -167,7 +165,7 @@ class TestRunAnalysisPipeline:
         mock_store = MagicMock()
         mock_store._aget_existing_ids = AsyncMock(return_value=set())
         mock_store.aadd_vacancies = AsyncMock(return_value=1)
-        mock_store.asearch_by_resume = AsyncMock(return_value=[(doc, 10.0)])
+        mock_store.asearch_by_resume = AsyncMock(return_value=[(doc, 0.34)])
 
         mock_scorer = MagicMock()
         mock_scorer.score_vacancies.return_value = [scored_vac]

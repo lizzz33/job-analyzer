@@ -4,7 +4,10 @@
 """
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import json
 import os
+from pathlib import Path
 
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 os.environ["CHROMA_TELEMETRY_DISABLED"] = "1"
@@ -70,10 +73,43 @@ def _vacancy_to_doc(v: Vacancy) -> Document:
 
 class VectorStore:
     VACANCY_COLLECTION = "vacancies"
+    EMBED_CACHE_FILE = "embedding_cache.json"
 
     def __init__(self):
         self._embeddings: HuggingFaceEmbeddings | None = None
         self._store: Chroma | None = None
+
+    @property
+    def _cache_path(self) -> Path | None:
+        if settings.chroma_db_path:
+            return Path(settings.chroma_db_path) / self.EMBED_CACHE_FILE
+        return None
+
+    def _load_cache(self) -> dict[str, list[float]]:
+        p = self._cache_path
+        if p and p.exists():
+            try:
+                return json.loads(p.read_text())
+            except Exception:
+                pass
+        return {}
+
+    def _save_cache(self, cache: dict[str, list[float]], protect_ids: set[str] | None = None) -> None:
+        p = self._cache_path
+        if p:
+            try:
+                existing = self._get_existing_ids()
+                if existing:
+                    protect = protect_ids or set()
+                    stale = [k for k in cache if k not in existing and k not in protect]
+                    for k in stale:
+                        del cache[k]
+                    if stale:
+                        logger.debug("Pruned {} stale cache entries", len(stale))
+                p.write_text(json.dumps(cache))
+                logger.debug("Saved embedding cache: {} entries", len(cache))
+            except Exception as e:
+                logger.warning("Failed to save embedding cache: {}", e)
 
     def _get_embeddings(self) -> HuggingFaceEmbeddings:
         if self._embeddings is None:
@@ -81,7 +117,7 @@ class VectorStore:
             self._embeddings = HuggingFaceEmbeddings(
                 model_name=EMBEDDING_MODEL,
                 model_kwargs={"device": "cpu"},
-                encode_kwargs={"normalize_embeddings": True},
+                encode_kwargs={"normalize_embeddings": True, "batch_size": 64},
             )
             logger.info("Embedding model loaded")
         return self._embeddings
@@ -128,18 +164,14 @@ class VectorStore:
             logger.warning("Compatibility check failed: {}", e)
 
     def add_vacancies(self, vacancies: list[Vacancy]) -> int:
-        """Добавляет вакансии в хранилище, обновляет существующие если появилось описание"""
+        """Добавляет вакансии в хранилище. Пропускает уже проэмбедженные.
+
+        Embeddings вычисляются один раз, сохраняются в ChromaDB и кэшируются на диск.
+        При повторном добавлении той же вакансии (после сброса коллекции) берёт
+        embedding из дискового кэша без повторного вычисления.
+        """
         existing_ids = self._get_existing_ids()
         new_vacancies = [v for v in vacancies if v.id not in existing_ids]
-        to_update = [v for v in vacancies if v.id in existing_ids and v.description]
-
-        if to_update:
-            docs = [_vacancy_to_doc(v) for v in to_update]
-            try:
-                self.store.add_documents(docs, ids=[v.id for v in to_update])
-                logger.info("Updated {} existing vacancies with descriptions", len(to_update))
-            except Exception as e:
-                logger.warning("Failed to update existing vacancies: {}", e)
 
         if not new_vacancies:
             logger.info("No new vacancies to add to vector store")
@@ -147,14 +179,34 @@ class VectorStore:
 
         docs = [_vacancy_to_doc(v) for v in new_vacancies]
         ids = [v.id for v in new_vacancies]
+        texts = [d.page_content for d in docs]
+        metas = [d.metadata for d in docs]
 
+        # Load disk cache — reuse already-computed embeddings
+        cache = self._load_cache()
+        uncached = [(i, vid, t) for i, (vid, t) in enumerate(zip(ids, texts, strict=True)) if vid not in cache]
+
+        if uncached:
+            _, unc_ids, unc_texts = zip(*uncached, strict=True)
+            emb_fn = self._get_embeddings()
+            new_embs = emb_fn.embed_documents(list(unc_texts))
+            for vid, emb in zip(unc_ids, new_embs, strict=True):
+                cache[vid] = emb
+            self._save_cache(cache, protect_ids=set(ids))
+            logger.info("Computed {} embeddings ({} from cache)", len(uncached), len(ids) - len(uncached))
+        else:
+            logger.info("All {} embeddings loaded from cache", len(ids))
+
+        embeddings = [cache[vid] for vid in ids]
+
+        # Add directly with precomputed embeddings (avoids double computation)
         try:
-            self.store.add_documents(docs, ids=ids)
+            self.store._collection.add(ids=ids, embeddings=embeddings, documents=texts, metadatas=metas)
         except Exception as e:
             if "dimension" in str(e).lower():
                 logger.warning("Embedding dimension mismatch — resetting collection and retrying")
                 self.reset_collection()
-                self.store.add_documents(docs, ids=ids)
+                self.store._collection.add(ids=ids, embeddings=embeddings, documents=texts, metadatas=metas)
             else:
                 raise
 
@@ -171,29 +223,46 @@ class VectorStore:
         k: int = 20,
         use_mmr: bool = True,
     ) -> list[tuple[Document, float]]:
-        """Семантический поиск: мульти-запросы + опциональный MMR для разнообразия."""
+        """Семантический поиск: батч-эмбеддинг + параллельные запросы + MMR."""
         queries = self._build_search_queries(profile, prefs)
+        logger.info("Vector search: {} queries, k={}", len(queries), k)
+        embeddings_model = self._get_embeddings()
 
-        # Multi-query: run each query, merge by best score per vacancy
+        # Batch-embed all queries at once
+        query_embs = embeddings_model.embed_documents(queries)
+        logger.info("Query embeddings computed")
+        first_emb = np.array(query_embs[0], dtype=np.float32)
+
+        col = self.store._collection
+
+        def _query_one(emb: list[float]) -> dict:
+            return col.query(query_embeddings=[emb], n_results=k, include=["documents", "metadatas", "distances"])
+
+        # Parallel ChromaDB queries
         merged: dict[str, tuple[Document, float]] = {}
-        for query in queries:
-            logger.info("Vector search: {}...", query[:100])
-            try:
-                results = self.store.similarity_search_with_score(query, k=k)
-            except Exception as e:
-                logger.error("Vector search error: {}", e)
-                continue
-            for doc, score in results:
-                vid = doc.metadata.get("id", "")
-                if vid not in merged or score < merged[vid][1]:
-                    merged[vid] = (doc, score)
+        with ThreadPoolExecutor() as pool:
+            futures = {pool.submit(_query_one, emb): i for i, emb in enumerate(query_embs)}
+            for future in futures:
+                try:
+                    qr = future.result()
+                    ids_list = qr["ids"][0]
+                    docs_list = qr["documents"][0]
+                    metas_list = qr["metadatas"][0]
+                    dists_list = qr["distances"][0]
+                    for doc_text, meta, score, vid in zip(docs_list, metas_list, dists_list, ids_list, strict=True):
+                        if vid not in merged or score < merged[vid][1]:
+                            merged[vid] = (Document(page_content=doc_text, metadata=meta), float(score))
+                except Exception as e:
+                    logger.error("Vector search error: {}", e)
 
         results = sorted(merged.values(), key=lambda x: x[1])
+        logger.info("Vector search done: {} unique results (dist range {:.4f}–{:.4f})",
+                     len(results), results[0][1] if results else 0, results[-1][1] if results else 0)
 
         # MMR reranking for diversity
         if use_mmr and len(results) > k:
             try:
-                results = self._mmr_rerank(queries[0], results, k)
+                results = self._mmr_rerank(queries[0], results, k, query_embedding=first_emb)
             except Exception as e:
                 logger.warning("MMR rerank failed, using top-k: {}", e)
                 results = results[:k]
@@ -208,6 +277,24 @@ class VectorStore:
         use_mmr: bool = True,
     ) -> list[tuple[Document, float]]:
         return await asyncio.to_thread(self.search_by_resume, profile, prefs, k=k, use_mmr=use_mmr)
+
+    def search_by_skills(
+        self,
+        skills: list[str],
+        k: int = 20,
+    ) -> list[tuple[Document, float]]:
+        """Семантический поиск вакансий по списку навыков."""
+        if not skills:
+            return []
+        query = ", ".join(skills[:SKILLS_IN_QUERY])
+        return self.store.similarity_search_with_score(query, k=k)
+
+    async def asearch_by_skills(
+        self,
+        skills: list[str],
+        k: int = 20,
+    ) -> list[tuple[Document, float]]:
+        return await asyncio.to_thread(self.search_by_skills, skills, k=k)
 
     def _build_search_queries(
         self,
@@ -243,9 +330,13 @@ class VectorStore:
         candidates: list[tuple[Document, float]],
         k: int,
         lambda_mult: float = 0.7,
+        query_embedding: np.ndarray | None = None,
     ) -> list[tuple[Document, float]]:
         """MMR reranking: balance relevance vs diversity using stored embeddings."""
-        query_emb = np.array(self._get_embeddings().embed_query(query_text), dtype=np.float32)
+        if query_embedding is not None:
+            query_emb = query_embedding
+        else:
+            query_emb = np.array(self._get_embeddings().embed_query(query_text), dtype=np.float32)
 
         ids = [doc.metadata.get("id", "") for doc, _ in candidates]
         stored = self.store._collection.get(ids=ids, include=["embeddings"])
@@ -301,3 +392,28 @@ class VectorStore:
             logger.info("Collection reset — will recreate on next access")
         except Exception as e:
             logger.error("Reset collection error: {}", e)
+
+    def _restore_from_cache(self, ids: list[str] | None = None) -> int:
+        """Restore embeddings from disk cache into ChromaDB after reset.
+
+        If ids is None, restores all cached entries.
+        Returns number of entries restored.
+        """
+        cache = self._load_cache()
+        if not cache:
+            return 0
+
+        if ids:
+            to_restore = {k: v for k, v in cache.items() if k in ids}
+        else:
+            to_restore = cache
+
+        if not to_restore:
+            return 0
+
+        col = self.store._collection
+        batch_ids = list(to_restore.keys())
+        batch_embs = list(to_restore.values())
+        col.add(ids=batch_ids, embeddings=batch_embs)
+        logger.info("Restored {} embeddings from cache", len(to_restore))
+        return len(to_restore)
