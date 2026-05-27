@@ -22,11 +22,11 @@ html, body, [class*="css"] {
 }
 h1, h2, h3 { font-family: 'Space Grotesk', sans-serif; }
 
-.stApp { background: #0f1117; }
+.stApp { background: #f5f7fa; }
 
 .metric-card {
-    background: #1a1d27;
-    border: 1px solid #2d3148;
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
     border-radius: 12px;
     padding: 20px 24px;
     text-align: center;
@@ -34,24 +34,24 @@ h1, h2, h3 { font-family: 'Space Grotesk', sans-serif; }
 .metric-card .val {
     font-size: 36px;
     font-weight: 700;
-    color: #818cf8;
+    color: #4f46e5;
     font-family: 'Space Grotesk', sans-serif;
 }
 .metric-card .label {
     font-size: 13px;
-    color: #6b7280;
+    color: #64748b;
     margin-top: 4px;
 }
 
 .vacancy-card {
-    background: #1a1d27;
-    border: 1px solid #2d3148;
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
     border-radius: 12px;
     padding: 20px 24px;
     margin-bottom: 12px;
     transition: border-color 0.2s;
 }
-.vacancy-card:hover { border-color: #818cf8; }
+.vacancy-card:hover { border-color: #4f46e5; }
 
 .score-badge {
     display: inline-block;
@@ -60,18 +60,18 @@ h1, h2, h3 { font-family: 'Space Grotesk', sans-serif; }
     font-size: 13px;
     font-weight: 600;
 }
-.score-high { background: #14532d; color: #4ade80; }
-.score-mid  { background: #451a03; color: #fb923c; }
-.score-low  { background: #450a0a; color: #f87171; }
+.score-high { background: #dcfce7; color: #15803d; }
+.score-mid  { background: #fef3c7; color: #b45309; }
+.score-low  { background: #fee2e2; color: #dc2626; }
 
 .tag {
     display: inline-block;
-    background: #1e2235;
-    border: 1px solid #3d4266;
+    background: #eef2ff;
+    border: 1px solid #c7d2fe;
     border-radius: 6px;
     padding: 2px 10px;
     font-size: 12px;
-    color: #a5b4fc;
+    color: #4f46e5;
     margin: 2px;
 }
 

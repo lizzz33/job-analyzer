@@ -77,6 +77,11 @@ class StateManager:
         data = self._prefs.read()
         if data:
             try:
+                # Migrate old work_format → work_formats
+                if "work_format" in data and "work_formats" not in data:
+                    data["work_formats"] = [data.pop("work_format")]
+                    self._prefs.write(data)
+                    logger.info("Migrated work_format → work_formats in preferences")
                 return UserPreferences(**data)
             except Exception as e:
                 logger.warning("Could not load preferences: {}", e)
@@ -120,12 +125,12 @@ def _get_state() -> StateManager:
     return get_state_manager()
 
 
-save_preferences = lambda *a, **kw: _get_state().save_preferences(*a, **kw)
-load_preferences = lambda *a, **kw: _get_state().load_preferences(*a, **kw)
-save_profile = lambda *a, **kw: _get_state().save_profile(*a, **kw)
-load_profile = lambda *a, **kw: _get_state().load_profile(*a, **kw)
-delete_profile = lambda *a, **kw: _get_state().delete_profile(*a, **kw)
-save_search_params = lambda *a, **kw: _get_state().save_search_params(*a, **kw)
-load_search_params = lambda *a, **kw: _get_state().load_search_params(*a, **kw)
-save_last_report_vacancies = lambda *a, **kw: _get_state().save_last_report_vacancies(*a, **kw)
-load_last_report = lambda *a, **kw: _get_state().load_last_report(*a, **kw)
+def save_preferences(*a, **kw): return _get_state().save_preferences(*a, **kw)
+def load_preferences(*a, **kw): return _get_state().load_preferences(*a, **kw)
+def save_profile(*a, **kw): return _get_state().save_profile(*a, **kw)
+def load_profile(*a, **kw): return _get_state().load_profile(*a, **kw)
+def delete_profile(*a, **kw): return _get_state().delete_profile(*a, **kw)
+def save_search_params(*a, **kw): return _get_state().save_search_params(*a, **kw)
+def load_search_params(*a, **kw): return _get_state().load_search_params(*a, **kw)
+def save_last_report_vacancies(*a, **kw): return _get_state().save_last_report_vacancies(*a, **kw)
+def load_last_report(*a, **kw): return _get_state().load_last_report(*a, **kw)

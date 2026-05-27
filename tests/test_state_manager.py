@@ -15,7 +15,7 @@ def sm(tmp_path):
 
 class TestStateBasic:
     def test_save_and_load_preferences(self, sm):
-        prefs = UserPreferences(city="Казань", work_format=WorkFormat.remote, salary_min=150000)
+        prefs = UserPreferences(city="Казань", work_formats=[WorkFormat.remote], salary_min=150000)
         sm.save_preferences(prefs)
 
         loaded = sm.load_preferences()
@@ -118,7 +118,7 @@ class TestLastReport:
 
 class TestSeparateFiles:
     def test_concurrent_saves_dont_corrupt(self, sm):
-        prefs = UserPreferences(city="Москва", work_format=WorkFormat.remote)
+        prefs = UserPreferences(city="Москва", work_formats=[WorkFormat.remote])
         sm.save_preferences(prefs)
 
         profile = ResumeProfile(raw_text="test", name="Тест")

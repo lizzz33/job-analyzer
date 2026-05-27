@@ -41,7 +41,7 @@ def sample_profile() -> ResumeProfile:
 def sample_prefs() -> UserPreferences:
     return UserPreferences(
         city="Москва",
-        work_format=WorkFormat.remote,
+        work_formats=[WorkFormat.remote],
         salary_min=200000,
         keywords=["python", "backend"],
     )

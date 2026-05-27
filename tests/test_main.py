@@ -1,6 +1,5 @@
 """Tests for FastAPI endpoints in app.main."""
 
-import asyncio
 import io
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -111,7 +110,7 @@ class TestPreferencesEndpoints:
 
         prefs_data = {
             "city": "Казань",
-            "work_format": "remote",
+            "work_formats": ["remote"],
             "salary_min": 150000,
             "include_no_salary": False,
             "excluded_companies": [],

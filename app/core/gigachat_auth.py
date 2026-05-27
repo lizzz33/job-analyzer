@@ -86,13 +86,18 @@ class GigaChatTokenProvider:
         }
         payload = f"scope={settings.gigachat_scope}&grant_type=client_credentials"
 
-        response = requests.post(
-            self._TOKEN_URL,
-            headers=headers,
-            data=payload,
-            verify=_get_ssl_verify(),
-        )
-        response.raise_for_status()
+        response = None
+        try:
+            response = requests.post(
+                self._TOKEN_URL,
+                headers=headers,
+                data=payload,
+                verify=_get_ssl_verify(),
+            )
+            response.raise_for_status()
+        except requests.RequestException as e:
+            logger.error("GigaChat token request failed (status={}): {}", getattr(response, "status_code", "N/A"), e)
+            raise
 
         data = response.json()
         expires_in = data.get("expires_in", 1800)

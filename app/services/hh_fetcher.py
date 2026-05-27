@@ -5,6 +5,7 @@ HH.ru закрыл публичный API, поэтому парсим HTML.
 
 import asyncio
 from datetime import UTC, datetime
+import random
 import re
 
 from bs4 import BeautifulSoup, Tag
@@ -16,13 +17,32 @@ from app.models.schemas import UserPreferences, Vacancy, WorkFormat
 HH_SEARCH_URL = "https://hh.ru/search/vacancy"
 HH_VACANCY_URL = "https://hh.ru/vacancy"
 
-USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-)
+USER_AGENTS = [
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
+]
 
-PAGE_DELAY = 4.0
-QUERY_DELAY = 10.0
+BROWSER_HEADERS = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Encoding": "gzip, deflate, br",
+    "DNT": "1",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Cache-Control": "max-age=0",
+}
+
+PAGE_DELAY = 6.0
+QUERY_DELAY = 15.0
+# One page per query (~20 vacancies); pipeline runs multiple queries so total
+# coverage stays sufficient without excessive scraping.
 MAX_PAGES = 5
 
 CITY_AREA_MAP = {
@@ -208,9 +228,11 @@ class HHFetcher:
             base_params["salary"] = prefs.salary_min
             if not prefs.include_no_salary:
                 base_params["only_with_salary"] = "true"
-        schedule = SCHEDULE_MAP.get(prefs.work_format)
-        if schedule:
-            base_params["schedule"] = schedule
+        if prefs.work_formats and WorkFormat.any_format not in prefs.work_formats:
+            # hh.ru supports only one schedule per request — use first selected
+            schedule = SCHEDULE_MAP.get(prefs.work_formats[0])
+            if schedule:
+                base_params["schedule"] = schedule
 
         seen_ids: set[str] = set()
         vacancies: list[Vacancy] = []
@@ -218,7 +240,8 @@ class HHFetcher:
         max_pages = min(MAX_PAGES, max(1, prefs.max_results_per_run // 20))
 
         async with httpx.AsyncClient(
-            headers={"User-Agent": USER_AGENT}, follow_redirects=True
+            headers={**BROWSER_HEADERS, "User-Agent": random.choice(USER_AGENTS)},
+            follow_redirects=True,
         ) as client:
             page = 0
             while page < max_pages:
@@ -283,10 +306,17 @@ class HHFetcher:
         return vacancies
 
     async def get_vacancy_details(self, vacancy_id: str) -> str | None:
+        headers = {
+            **BROWSER_HEADERS,
+            "User-Agent": random.choice(USER_AGENTS),
+            "Referer": f"{HH_SEARCH_URL}?text={vacancy_id}",
+        }
         async with httpx.AsyncClient(
-            headers={"User-Agent": USER_AGENT}, follow_redirects=True
+            headers=headers,
+            follow_redirects=True,
         ) as client:
             try:
+                await asyncio.sleep(random.uniform(1.5, 3.5))
                 resp = await client.get(f"{HH_VACANCY_URL}/{vacancy_id}", timeout=15.0)
                 resp.raise_for_status()
                 soup = BeautifulSoup(resp.text, "lxml")

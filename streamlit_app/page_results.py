@@ -28,6 +28,18 @@ def _load_report() -> tuple[list[dict], str | None]:
         return [], f"Ошибка: {e}"
 
 
+def _load_feedback() -> dict[str, str]:
+    """Load feedback map: vacancy_id → 'like'/'dislike'."""
+    try:
+        r = httpx.get(f"{API}/feedback", timeout=5)
+        if r.status_code == 200:
+            items = r.json().get("feedback", [])
+            return {f["vacancy_id"]: f["feedback_type"] for f in items}
+    except Exception:
+        pass
+    return {}
+
+
 def _score_class(score: float) -> str:
     if score >= 0.75:
         return "score-high"
@@ -48,7 +60,7 @@ def _salary_str(v: dict) -> str:
     return "не указана"
 
 
-def _render_vacancy_card(i: int, sv: dict) -> None:
+def _render_vacancy_card(i: int, sv: dict, feedback_map: dict | None = None) -> None:
     v = sv["vacancy"]
     score_pct = int(sv["score"] * 100)
     s_class = _score_class(sv["score"])
@@ -61,7 +73,7 @@ def _render_vacancy_card(i: int, sv: dict) -> None:
     safe_title = html.escape(v.get("title", ""))
     safe_company = html.escape(v.get("company", ""))
     safe_city = html.escape(v.get("city", ""))
-    safe_reason = html.escape(sv.get("match_reason", "")[:200])
+    safe_reason = html.escape(sv.get("match_reason", "")[:500])
 
     st.markdown(
         f"""
@@ -94,6 +106,36 @@ def _render_vacancy_card(i: int, sv: dict) -> None:
 """,
         unsafe_allow_html=True,
     )
+
+    # Feedback buttons
+    feedback_map = feedback_map or {}
+    vid = v.get("id", str(i))
+    current_fb = feedback_map.get(vid)
+    col_fb1, col_fb2, col_fb3 = st.columns([1, 1, 6])
+    with col_fb1:
+        like_label = "👍" if current_fb != "like" else "👍 Избранное"
+        if st.button(like_label, key=f"like_{vid}"):
+            try:
+                httpx.post(f"{API}/feedback", json={
+                    "vacancy_id": vid,
+                    "feedback_type": "like",
+                    "company": v.get("company", ""),
+                }, timeout=5)
+                st.toast("Добавлено в избранное")
+            except Exception:
+                pass
+    with col_fb2:
+        dislike_label = "👎" if current_fb != "dislike" else "👎 Скрыто"
+        if st.button(dislike_label, key=f"dislike_{vid}"):
+            try:
+                httpx.post(f"{API}/feedback", json={
+                    "vacancy_id": vid,
+                    "feedback_type": "dislike",
+                    "company": v.get("company", ""),
+                }, timeout=5)
+                st.toast("Добавлено в скрытые")
+            except Exception:
+                pass
 
 
 def render():
@@ -170,9 +212,13 @@ def render():
             sel_companies = st.multiselect("Компании", companies, default=companies)
         with col_f3:
             sort_by = st.selectbox("Сортировка", ["По релевантности", "По дате", "По зарплате"])
+        only_with_salary = st.checkbox("Только с указанной зарплатой")
 
     filtered = [
-        v for v in vacancies if v["score"] >= min_score and v["vacancy"]["company"] in sel_companies
+        v for v in vacancies
+        if v["score"] >= min_score
+        and v["vacancy"]["company"] in sel_companies
+        and (not only_with_salary or v["vacancy"].get("salary_from") or v["vacancy"].get("salary_to"))
     ]
 
     if sort_by == "По дате":
@@ -198,14 +244,14 @@ def render():
             )
             fig.update_layout(
                 paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(26,29,39,1)",
-                font_color="#9ca3af",
+                plot_bgcolor="rgba(255,255,255,1)",
+                font_color="#334155",
                 margin={"l": 0, "r": 0, "t": 20, "b": 0},
                 height=220,
                 showlegend=False,
             )
-            fig.update_xaxes(gridcolor="#2d3148", range=[0, 100])
-            fig.update_yaxes(gridcolor="#2d3148")
+            fig.update_xaxes(gridcolor="#e2e8f0", range=[0, 100])
+            fig.update_yaxes(gridcolor="#e2e8f0")
             st.plotly_chart(fig, use_container_width=True)
 
         with col_ch2:
@@ -226,15 +272,15 @@ def render():
             )
             fig2.update_layout(
                 paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(26,29,39,1)",
-                font_color="#9ca3af",
+                plot_bgcolor="rgba(255,255,255,1)",
+                font_color="#334155",
                 margin={"l": 0, "r": 0, "t": 20, "b": 0},
                 height=220,
                 showlegend=False,
                 yaxis={"autorange": "reversed"},
             )
-            fig2.update_xaxes(gridcolor="#2d3148")
-            fig2.update_yaxes(gridcolor="#2d3148")
+            fig2.update_xaxes(gridcolor="#e2e8f0")
+            fig2.update_yaxes(gridcolor="#e2e8f0")
             st.plotly_chart(fig2, use_container_width=True)
 
     st.markdown("---")
@@ -264,8 +310,9 @@ def render():
             st.rerun()
 
     # ── Карточки вакансий ─────────────────────────────────────────────────────
+    feedback_map = _load_feedback()
     for i, sv in enumerate(page_items, start=start + 1):
-        _render_vacancy_card(i, sv)
+        _render_vacancy_card(i, sv, feedback_map)
 
     # ── Нижняя пагинация ──────────────────────────────────────────────────────
     if total_pages > 1:

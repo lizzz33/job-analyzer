@@ -67,7 +67,7 @@ class TestBuildSearchQueries:
         assert len(queries) > 0
         assert "специалист" in queries or "разработчик" in queries
 
-    def test_limits_skills_to_5(self):
+    def test_limits_skills_to_2(self):
         from app.core.pipeline import _build_search_queries
 
         profile = ResumeProfile(raw_text="text", skills=[f"s{i}" for i in range(10)])
@@ -75,8 +75,9 @@ class TestBuildSearchQueries:
         queries = _build_search_queries(profile, prefs)
 
         skills_query = [q for q in queries if "s0" in q][0]
-        assert "s4" in skills_query
-        assert "s5" not in skills_query
+        assert "s0" in skills_query
+        assert "s1" in skills_query
+        assert "s2" not in skills_query
 
 
 class TestRunAnalysisPipeline:

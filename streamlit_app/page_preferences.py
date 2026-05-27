@@ -18,7 +18,7 @@ CITIES = [
     "Удалённо",
 ]
 
-WORK_FORMATS = {"any": "Любой", "remote": "Удалённо", "office": "Офис", "hybrid": "Гибрид"}
+WORK_FORMATS = {"remote": "Удалённо", "office": "Офис", "hybrid": "Гибрид", "any": "Любой"}
 
 
 def _load_prefs() -> dict:
@@ -44,12 +44,15 @@ def render():
                 "Город", opts, index=opts.index(city_val) if city_val in opts else 0
             )
         with col2:
-            fmt_val = prefs.get("work_format", "any")
-            fmt = st.selectbox(
+            saved_fmts = prefs.get("work_formats", ["any"])
+            if isinstance(saved_fmts, str):
+                saved_fmts = [saved_fmts]
+            default_fmts = [f for f in saved_fmts if f in WORK_FORMATS] or ["any"]
+            fmt = st.multiselect(
                 "Формат работы",
                 list(WORK_FORMATS.keys()),
+                default=default_fmts,
                 format_func=lambda x: WORK_FORMATS[x],
-                index=list(WORK_FORMATS.keys()).index(fmt_val) if fmt_val in WORK_FORMATS else 0,
             )
 
         col3, col4 = st.columns(2)
@@ -66,10 +69,6 @@ def render():
                 "Включать вакансии без указанной ЗП",
                 value=prefs.get("include_no_salary", False),
             )
-        max_results = st.slider(
-            "Вакансий за запрос", 10, 100, value=prefs.get("max_results_per_run", 50), step=10
-        )
-
         keywords_str = st.text_input(
             "Ключевые слова для поиска",
             value=", ".join(prefs.get("keywords", [])),
@@ -103,13 +102,17 @@ def render():
         if st.form_submit_button("💾 Сохранить", type="primary", use_container_width=True):
             payload = {
                 "city": city,
-                "work_format": fmt,
+                "work_formats": fmt or ["any"],
                 "salary_min": salary_min if salary_min > 0 else None,
                 "include_no_salary": include_no_salary,
-                "max_results_per_run": max_results,
+                "max_results_per_run": 100,
                 "keywords": [k.strip() for k in keywords_str.split(",") if k.strip()],
-                "preferred_companies": [c.strip() for c in preferred_str.splitlines() if c.strip()],
-                "excluded_companies": [c.strip() for c in excluded_str.splitlines() if c.strip()],
+                "preferred_companies": [
+                    c.strip() for c in preferred_str.replace(",", "\n").splitlines() if c.strip()
+                ],
+                "excluded_companies": [
+                    c.strip() for c in excluded_str.replace(",", "\n").splitlines() if c.strip()
+                ],
                 "extra_interests": extra,
             }
             try:

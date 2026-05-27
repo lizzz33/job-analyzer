@@ -15,7 +15,7 @@ from loguru import logger
 
 from app.core.config import settings
 from app.core.deps import get_resume_parser, get_state_manager, get_vector_store
-from app.models.schemas import UserPreferences
+from app.models.schemas import UserPreferences, VacancyFeedback
 
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
 
@@ -46,6 +46,10 @@ def _verify_api_key(request: Request) -> None:
 async def lifespan(app: FastAPI):
     global _pipeline_lock
     _pipeline_lock = asyncio.Lock()
+
+    # Check vector store embedding compatibility
+    from app.core.deps import get_vector_store
+    get_vector_store().ensure_compatible()
 
     if settings.scheduler_enabled:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -244,3 +248,30 @@ def clear_data(_auth: None = Depends(_verify_api_key)):
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+# ── Feedback ──────────────────────────────────────────────────────────────────
+
+
+@app.post("/feedback")
+def submit_feedback(feedback: VacancyFeedback, _auth: None = Depends(_verify_api_key)):
+    from app.core.deps import get_feedback_store
+
+    get_feedback_store().add_feedback(feedback)
+    return {"status": "ok"}
+
+
+@app.delete("/feedback/{vacancy_id}")
+def remove_feedback(vacancy_id: str, _auth: None = Depends(_verify_api_key)):
+    from app.core.deps import get_feedback_store
+
+    get_feedback_store().remove_feedback(vacancy_id)
+    return {"status": "ok"}
+
+
+@app.get("/feedback")
+def list_feedback(_auth: None = Depends(_verify_api_key)):
+    from app.core.deps import get_feedback_store
+
+    items = get_feedback_store().get_all()
+    return {"feedback": [f.model_dump(mode="json") for f in items]}

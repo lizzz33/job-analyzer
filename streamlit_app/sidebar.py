@@ -1,5 +1,7 @@
 """Sidebar — навигация и статус"""
 
+from datetime import timedelta
+
 import httpx
 import streamlit as st
 
@@ -20,6 +22,18 @@ def _get_stats():
         return None
 
 
+@st.fragment(run_every=timedelta(seconds=10))
+def _live_stats():
+    stats = _get_stats()
+    count = stats.get("vacancies_in_db", 0) if stats else 0
+    has_resume = stats.get("has_resume") if stats else False
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Вакансий в БД", count)
+    with col2:
+        st.metric("Резюме", "✅" if has_resume else "❌")
+
+
 def render():
     st.markdown("## 🎯 Job Analyzer")
     st.markdown("---")
@@ -38,12 +52,7 @@ def render():
         )
         st.caption("Проверьте: docker compose up")
 
-    if stats:
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Вакансий в БД", stats.get("vacancies_in_db", 0))
-        with col2:
-            st.metric("Резюме", "✅" if stats.get("has_resume") else "❌")
+    _live_stats()
 
     st.markdown("---")
     st.markdown("**Навигация**")

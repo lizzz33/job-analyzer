@@ -35,8 +35,8 @@ async def daily_job():
             report.total_found,
             len(report.top_vacancies),
         )
-    except Exception as e:
-        logger.error("Daily job failed: {}", e)
+    except Exception:
+        logger.exception("Daily job failed")
 
 
 async def main():

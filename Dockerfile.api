@@ -8,8 +8,17 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# CPU-only torch to avoid CUDA bloat
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
 COPY pyproject.toml .
 RUN pip install --no-cache-dir .
+
+# Pre-download embedding model to avoid cold-start delay (~400 MB)
+ARG HF_TOKEN
+RUN HF_TOKEN=${HF_TOKEN} python -c "from langchain_huggingface import HuggingFaceEmbeddings; \
+    HuggingFaceEmbeddings(model_name='deepvk/USER-bge-m3', \
+    model_kwargs={'device':'cpu'}, encode_kwargs={'normalize_embeddings':True})"
 
 COPY . .
 

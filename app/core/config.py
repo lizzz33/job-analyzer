@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from pydantic import Field, model_validator
@@ -37,11 +38,14 @@ class Settings(BaseSettings):
 
     # Secret file paths
     gigachat_api_key_file: str = Field("", alias="GIGACHAT_API_KEY_FILE")
+    hf_token_file: str = Field("", alias="HF_TOKEN_FILE")
 
     @model_validator(mode="after")
     def _load_secrets_from_files(self) -> "Settings":
         if self.gigachat_api_key_file and not self.gigachat_api_key:
             self.gigachat_api_key = _read_secret(self.gigachat_api_key_file)
+        if self.hf_token_file and not os.environ.get("HF_TOKEN"):
+            os.environ["HF_TOKEN"] = _read_secret(self.hf_token_file)
         return self
 
     def ensure_dirs(self):

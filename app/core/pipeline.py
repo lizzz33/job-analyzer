@@ -9,9 +9,16 @@ import json
 
 from loguru import logger
 
+from app.core.deps import get_feedback_store
 from app.models.schemas import DailyReport, ResumeProfile, ScoredVacancy, UserPreferences, Vacancy
 from app.services.hh_fetcher import QUERY_DELAY
-from app.services.scorer import COSINE_DIST_BEST, COSINE_DIST_WORST
+from app.services.scorer import _normalize_semantic_scores
+from app.services.seniority import (
+    SeniorityLevel,
+    detect_seniority_from_experience,
+    detect_seniority_from_title,
+    is_seniority_compatible,
+)
 from app.services.state_manager import (
     load_preferences,
     load_profile,
@@ -23,25 +30,54 @@ from app.services.state_manager import (
 # Multiply top_n by this to get the number of candidates from vector search.
 SEARCH_CANDIDATES_MULTIPLIER = 3
 
+# Feedback score adjustments — asymmetric by design: dislike penalty is stronger
+# to ensure irrelevant companies sink below the min_score threshold faster.
+FEEDBACK_LIKE_BOOST = 0.05
+FEEDBACK_DISLIKE_PENALTY = 0.1
+
+MIN_RELEVANCE_SCORE = 0.4
+DESCRIPTION_FETCH_CONCURRENCY = 2
+
 
 def _build_search_queries(profile: ResumeProfile, prefs: UserPreferences) -> list[str]:
-    queries = []
-    if profile.position:
-        queries.append(profile.position)
+    """Build short, focused search queries for hh.ru.
+
+    Strategy: role + top skill combinations give the best results on hh.ru.
+    Individual skills as standalone queries are too broad.
+    """
+    # Extract core role (first 2-3 words from position)
+    role = " ".join(profile.position.split()[:3]) if profile.position else ""
+    top_skills = profile.skills[:4] if profile.skills else []
+
+    queries: list[str] = []
+
+    # Query 1: role alone (broadest)
+    if role:
+        queries.append(role)
+
+    # Queries 2-3: role + top skill (targeted)
+    for skill in top_skills[:2]:
+        if role:
+            queries.append(f"{role} {skill}")
+
+    # Combined top skills query (works without a role too)
+    if top_skills:
+        queries.append(" ".join(top_skills[:2]))
+
+    # Queries 4+: user keywords (intentional, already short)
     if prefs.keywords:
         queries.extend(prefs.keywords[:3])
-    if profile.skills:
-        queries.append(" ".join(profile.skills[:5]))
+
+    # Fallback
     if not queries:
-        logger.warning(
-            "No position, skills, or keywords in profile — using generic fallback queries"
-        )
         queries = ["специалист", "разработчик"]
+
+    # Deduplicate and enforce length limit
     seen: set[str] = set()
     unique = []
     for q in queries:
         key = q.lower()
-        if key not in seen:
+        if key not in seen and len(q) <= 80:
             seen.add(key)
             unique.append(q)
     return unique
@@ -53,13 +89,15 @@ def _semantic_fallback(
     top_n: int,
 ) -> list[ScoredVacancy]:
     """Fallback ranking using only semantic distance when LLM is unavailable."""
+    raw_distances = [d for _, d in docs_with_scores]
+    norm_scores = _normalize_semantic_scores(raw_distances)
+
     results: list[ScoredVacancy] = []
-    for doc, raw_distance in docs_with_scores:
+    for (doc, _), norm in zip(docs_with_scores, norm_scores, strict=True):
         vid = doc.metadata.get("id", "")
         vacancy = vacancies_map.get(vid)
         if not vacancy:
             continue
-        norm = max(0.0, min(1.0, (COSINE_DIST_WORST - raw_distance) / (COSINE_DIST_WORST - COSINE_DIST_BEST)))
         results.append(ScoredVacancy(
             vacancy=vacancy,
             score=round(norm, 3),
@@ -97,7 +135,7 @@ async def run_analysis_pipeline(
     params_hash = sha256(json.dumps({
         "queries": sorted(queries),
         "city": prefs.city,
-        "work_format": prefs.work_format.value,
+        "work_formats": sorted(f.value for f in prefs.work_formats),
         "salary_min": prefs.salary_min,
         "excluded": sorted(prefs.excluded_companies),
     }, sort_keys=True).encode()).hexdigest()
@@ -123,12 +161,52 @@ async def run_analysis_pipeline(
 
     logger.info("Total unique vacancies fetched: {}", len(vacancies_map))
 
+    # Fetch descriptions for vacancies without one
+    new_vacancies = [v for v in vacancies_map.values() if not v.description]
+    if new_vacancies:
+        logger.info("Fetching descriptions for {} vacancies", len(new_vacancies))
+
+        async def _fetch_description(v: Vacancy, sem: asyncio.Semaphore) -> None:
+            async with sem:
+                desc = await hh_fetcher.get_vacancy_details(v.id)
+                if desc:
+                    v.description = desc
+                await asyncio.sleep(1.5)
+
+        sem = asyncio.Semaphore(DESCRIPTION_FETCH_CONCURRENCY)
+        await asyncio.gather(*[_fetch_description(v, sem) for v in new_vacancies])
+
     added = await vector_store.aadd_vacancies(list(vacancies_map.values()))
     logger.info("Added {} new vacancies to vector store", added)
 
     docs_with_scores = await vector_store.asearch_by_resume(
-        profile, k=top_n * SEARCH_CANDIDATES_MULTIPLIER
+        profile, prefs=prefs, k=top_n * SEARCH_CANDIDATES_MULTIPLIER
     )
+
+    if prefs.excluded_companies:
+        ex_lower = [ex.lower() for ex in prefs.excluded_companies if ex]
+        docs_with_scores = [
+            (doc, score)
+            for doc, score in docs_with_scores
+            if not any(e in doc.metadata.get("company", "").lower() for e in ex_lower)
+        ]
+
+    # Seniority pre-filter
+    candidate_level = detect_seniority_from_experience(profile.experience_years)
+    if candidate_level != SeniorityLevel.UNKNOWN:
+        before_seniority = len(docs_with_scores)
+        docs_with_scores = [
+            (doc, score)
+            for doc, score in docs_with_scores
+            if is_seniority_compatible(
+                candidate_level, detect_seniority_from_title(doc.metadata.get("title", ""))
+            )
+        ]
+        if len(docs_with_scores) < before_seniority:
+            logger.info(
+                "Seniority filter: {} → {} (candidate: {})",
+                before_seniority, len(docs_with_scores), candidate_level.name,
+            )
 
     if not docs_with_scores:
         logger.warning("No results from vector search")
@@ -167,6 +245,25 @@ async def run_analysis_pipeline(
     if not scored and docs_with_scores:
         logger.warning("LLM scoring returned nothing — falling back to semantic scores")
         scored = _semantic_fallback(docs_with_scores, vacancies_map, top_n)
+
+    before = len(scored)
+    scored = [sv for sv in scored if sv.score >= MIN_RELEVANCE_SCORE]
+    if len(scored) < before:
+        logger.info("Filtered {} vacancies below {:.0%} threshold", before - len(scored), MIN_RELEVANCE_SCORE)
+
+    # Apply feedback-based score adjustments
+    fb = get_feedback_store()
+    liked = fb.get_liked_companies()
+    disliked = fb.get_disliked_companies()
+    if liked or disliked:
+        for sv in scored:
+            company_lower = sv.vacancy.company.lower()
+            if company_lower in liked:
+                sv.score = min(1.0, sv.score + FEEDBACK_LIKE_BOOST)
+            elif company_lower in disliked:
+                sv.score = max(0.0, sv.score - FEEDBACK_DISLIKE_PENALTY)
+        scored.sort(key=lambda x: x.score, reverse=True)
+        logger.info("Feedback applied: {} liked, {} disliked companies", len(liked), len(disliked))
 
     try:
         summary = await asyncio.to_thread(llm_scorer.generate_daily_summary, scored, profile)

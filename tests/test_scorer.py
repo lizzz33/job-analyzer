@@ -2,9 +2,10 @@
 
 from datetime import UTC, datetime
 import json
-from unittest.mock import MagicMock, PropertyMock
+from unittest.mock import MagicMock, PropertyMock, patch
 
 from langchain_core.documents import Document
+import pytest
 
 from app.models.schemas import (
     ResumeProfile,
@@ -12,6 +13,15 @@ from app.models.schemas import (
     UserPreferences,
     Vacancy,
 )
+
+
+@pytest.fixture(autouse=True)
+def _tmp_score_cache(tmp_path):
+    """Redirect ScoreCache to a temp dir so tests don't touch data/resumes/."""
+    from app.services.score_cache import ScoreCache
+
+    with patch("app.core.deps.get_score_cache", return_value=ScoreCache(cache_dir=tmp_path)):
+        yield
 
 
 def _make_vacancy(vid="1", title="Dev") -> Vacancy:
@@ -173,6 +183,48 @@ class TestScoreVacancies:
 
         assert len(results) == 1
         assert results[0].match_reason == "Оценка по семантическому сходству"
+
+
+class TestNormalizeSemanticScores:
+    def test_best_gets_1_worst_gets_0(self):
+        from app.services.scorer import _normalize_semantic_scores
+
+        scores = _normalize_semantic_scores([0.1, 0.3, 0.5])
+        assert scores[0] == pytest.approx(1.0)
+        assert scores[1] == pytest.approx(0.5)
+        assert scores[2] == pytest.approx(0.0)
+
+    def test_single_result_returns_0_5(self):
+        from app.services.scorer import _normalize_semantic_scores
+
+        scores = _normalize_semantic_scores([0.3])
+        assert scores == [0.5]
+
+    def test_all_equal_returns_0_5(self):
+        from app.services.scorer import _normalize_semantic_scores
+
+        scores = _normalize_semantic_scores([0.25, 0.25, 0.25])
+        assert scores == [0.5, 0.5, 0.5]
+
+    def test_empty_returns_empty(self):
+        from app.services.scorer import _normalize_semantic_scores
+
+        assert _normalize_semantic_scores([]) == []
+
+    def test_two_results(self):
+        from app.services.scorer import _normalize_semantic_scores
+
+        scores = _normalize_semantic_scores([0.2, 0.4])
+        assert scores[0] == pytest.approx(1.0)
+        assert scores[1] == pytest.approx(0.0)
+
+    def test_preserves_order(self):
+        from app.services.scorer import _normalize_semantic_scores
+
+        scores = _normalize_semantic_scores([0.5, 0.1, 0.3])
+        assert scores[0] == pytest.approx(0.0)
+        assert scores[1] == pytest.approx(1.0)
+        assert scores[2] == pytest.approx(0.5)
 
 
 class TestDailySummary:

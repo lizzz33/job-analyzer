@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
+      args:
+        - HF_TOKEN=${HF_TOKEN:-}
     container_name: job_analyzer_api
     ports:
       - "8000:8000"
@@ -11,6 +13,7 @@ services:
       - ~/secrets/gigachat_ca.pem:/app/cert.pem:ro
     secrets:
       - gigachat_api_key
+      - hf_token
     environment:
       - GIGACHAT_SCOPE=GIGACHAT_API_PERS
       - DAILY_REPORT_HOUR=9
@@ -19,10 +22,11 @@ services:
       - RESUMES_PATH=/app/data/resumes
       - API_BASE_URL=http://api:8000
       - GIGACHAT_API_KEY_FILE=/run/secrets/gigachat_api_key
-      - GIGACHAT_MODEL=GigaChat-Pro
+      - GIGACHAT_MODEL=GigaChat-2
       - CORS_ORIGINS=http://localhost:8501,http://streamlit:8501
       - GIGACHAT_SSL_REQUIRED=1
       - GIGACHAT_CA_CERT_PATH=/app/cert.pem
+      - HF_TOKEN_FILE=/run/secrets/hf_token
     restart: unless-stopped
     networks:
       - job_net
@@ -59,6 +63,7 @@ services:
       - ~/secrets/gigachat_ca.pem:/app/cert.pem:ro
     secrets:
       - gigachat_api_key
+      - hf_token
     environment:
       - GIGACHAT_SCOPE=GIGACHAT_API_PERS
       - DAILY_REPORT_HOUR=9
@@ -67,9 +72,10 @@ services:
       - RESUMES_PATH=/app/data/resumes
       - API_BASE_URL=http://api:8000
       - GIGACHAT_API_KEY_FILE=/run/secrets/gigachat_api_key
-      - GIGACHAT_MODEL=GigaChat-Pro
+      - GIGACHAT_MODEL=GigaChat-2
       - GIGACHAT_SSL_REQUIRED=1
       - GIGACHAT_CA_CERT_PATH=/app/cert.pem
+      - HF_TOKEN_FILE=/run/secrets/hf_token
     depends_on:
       api:
         condition: service_healthy
@@ -80,6 +86,8 @@ services:
 secrets:
   gigachat_api_key:
     file: ~/secrets/gigachat_api_key.txt
+  hf_token:
+    file: ~/secrets/hf_token.txt
 
 networks:
   job_net:

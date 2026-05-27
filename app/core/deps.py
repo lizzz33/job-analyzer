@@ -35,3 +35,17 @@ def get_vector_store() -> VectorStore:
 @lru_cache(maxsize=1)
 def get_state_manager() -> StateManager:
     return StateManager()
+
+
+@lru_cache(maxsize=1)
+def get_feedback_store():
+    from app.services.feedback_store import FeedbackStore
+
+    return FeedbackStore()
+
+
+@lru_cache(maxsize=1)
+def get_score_cache():
+    from app.services.score_cache import ScoreCache
+
+    return ScoreCache()

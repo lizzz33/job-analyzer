@@ -64,7 +64,7 @@ class TestVacancyToDoc:
         assert "?" in doc.page_content
 
 
-class TestBuildSearchQuery:
+class TestBuildSearchQueries:
     def test_uses_position_skills_summary(self):
         from app.services.vector_store import VectorStore
 
@@ -75,20 +75,21 @@ class TestBuildSearchQuery:
             skills=["Python", "Spark"],
             summary="Building data pipelines",
         )
-        query = vs._build_search_query(profile)
+        queries = vs._build_search_queries(profile)
 
-        assert "Data Engineer" in query
-        assert "Python" in query
-        assert "data pipelines" in query
+        combined = " ".join(queries)
+        assert "Data Engineer" in combined
+        assert "Python" in combined
+        assert "data pipelines" in combined
 
     def test_falls_back_to_raw_text(self):
         from app.services.vector_store import VectorStore
 
         vs = VectorStore()
         profile = ResumeProfile(raw_text="Just some raw text " * 100)
-        query = vs._build_search_query(profile)
+        queries = vs._build_search_queries(profile)
 
-        assert query == profile.raw_text[:500]
+        assert any(profile.raw_text[:500] in q for q in queries)
 
     def test_limits_skills_to_10(self):
         from app.services.vector_store import VectorStore
@@ -98,10 +99,11 @@ class TestBuildSearchQuery:
             raw_text="text",
             skills=[f"skill_{i}" for i in range(20)],
         )
-        query = vs._build_search_query(profile)
+        queries = vs._build_search_queries(profile)
 
-        assert "skill_9" in query
-        assert "skill_10" not in query
+        combined = " ".join(queries)
+        assert "skill_9" in combined
+        assert "skill_10" not in combined
 
 
 class TestVectorStoreIntegration:
@@ -182,11 +184,11 @@ class TestVectorStoreIntegration:
 
         assert vs.get_total_count() == 0
 
-    def test_clear_calls_delete(self):
-        vs, _, mock_collection = self._make_store()
+    def test_clear_resets_collection(self):
+        vs, mock_store, mock_collection = self._make_store()
 
         vs.clear()
-        mock_collection.delete.assert_called_once()
+        mock_store._client.delete_collection.assert_called_once()
 
     def test_get_existing_ids(self):
         vs, _, mock_collection = self._make_store()

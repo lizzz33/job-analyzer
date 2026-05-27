@@ -26,7 +26,7 @@ def test_user_preferences_defaults():
 
     prefs = UserPreferences()
     assert prefs.city == "Москва"
-    assert prefs.work_format == WorkFormat.any_format
+    assert prefs.work_formats == [WorkFormat.any_format]
     assert prefs.salary_min is None
 
 

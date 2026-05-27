@@ -13,7 +13,9 @@ class WorkFormat(StrEnum):
 
 class UserPreferences(BaseModel):
     city: str = Field("Москва", description="Желаемый город работы")
-    work_format: WorkFormat = Field(WorkFormat.any_format, description="Формат работы")
+    work_formats: list[WorkFormat] = Field(
+        default_factory=lambda: [WorkFormat.any_format], description="Форматы работы"
+    )
     salary_min: int | None = Field(None, description="Минимальная зарплата (руб.)")
     include_no_salary: bool = Field(False, description="Включать вакансии без указанной ЗП")
     excluded_companies: list[str] = Field(default_factory=list, description="Стоп-лист компаний")
@@ -64,3 +66,15 @@ class DailyReport(BaseModel):
     total_found: int
     top_vacancies: list[ScoredVacancy]
     summary_text: str = ""
+
+
+class FeedbackType(StrEnum):
+    like = "like"
+    dislike = "dislike"
+
+
+class VacancyFeedback(BaseModel):
+    vacancy_id: str
+    feedback_type: FeedbackType
+    company: str = ""
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
